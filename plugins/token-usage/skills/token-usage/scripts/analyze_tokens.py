@@ -78,17 +78,34 @@ def session_of(amap):
 
 
 def day_of(node):
-    """Best-effort date from a span/datapoint timestamp (nanoseconds)."""
+    """Best-effort date from a span/datapoint timestamp.
+
+    Handles both the raw OTLP/protobuf style (single integer nanoseconds under
+    *UnixNano keys) and the OpenTelemetry JS SDK style used by the CLI's file
+    exporter (startTime/endTime as a [seconds, nanoseconds] pair).
+    """
+    import datetime
+
+    # OTLP/protobuf style: single integer nanoseconds since epoch.
     for key in ("startTimeUnixNano", "timeUnixNano", "endTimeUnixNano"):
         ts = node.get(key)
         if ts:
             try:
-                import datetime
-
                 secs = int(ts) / 1e9
                 return datetime.datetime.utcfromtimestamp(secs).strftime("%Y-%m-%d")
             except (TypeError, ValueError, OverflowError):
                 pass
+
+    # OTel JS SDK style: [seconds, nanoseconds] pair.
+    for key in ("startTime", "endTime"):
+        ts = node.get(key)
+        if isinstance(ts, (list, tuple)) and ts:
+            try:
+                secs = int(ts[0])
+                return datetime.datetime.utcfromtimestamp(secs).strftime("%Y-%m-%d")
+            except (TypeError, ValueError, OverflowError, IndexError):
+                pass
+
     return "unknown"
 
 
