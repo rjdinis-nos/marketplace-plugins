@@ -25,7 +25,7 @@ Only sessions started *after* activation are captured. Built-in help:
 | `OTEL_RESOURCE_ATTRIBUTES` | Extra resource attributes, comma-separated `key=value`. |
 | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | `"true"` to capture full prompt/response content (sensitive). Default `false`. |
 | `OTEL_LOG_LEVEL` | OTel diagnostic log level: NONE, ERROR, WARN, INFO, DEBUG, VERBOSE, ALL. |
-| `COPILOT_TOKEN_RATES` | Path to a JSON rates file used by `analyze_tokens.py` for cost estimates. Either flat (`input`/`output`/`cache_read`/`cache_write`/`currency`, `$`/Mtok) or a per-model `models` map (see `rates.copilot.json`). Read by the analyzer only — not by the CLI. |
+| `COPILOT_TOKEN_RATES` | Path to a per-model JSON rates file used by `analyze_tokens.py` for cost estimates (a `models` map keyed by model id; see `rates.copilot.json`). Read by the analyzer only — not by the CLI. |
 
 ## GenAI signals emitted
 
@@ -83,17 +83,14 @@ python3 "$SKILL_DIR/scripts/analyze_tokens.py" [PATH] [--by model|session|day|al
 - By default also reads rotated/compressed siblings (`PATH*`, including `.gz`); use `--current-only` to read just the active file.
 - `--show-time` adds `first`/`last` activity datetime columns (UTC, derived from span timestamps); in `--json` these appear as `first_ts`/`last_ts` ISO-8601 strings.
 - Prefers per-call span attributes; falls back to the token metric if no span usage is present.
-- Cost: pass a `--rates FILE` (or `$COPILOT_TOKEN_RATES`) JSON file, or
-  `--rate-*` flags, to add an `est_cost` column. Two file shapes are accepted:
-  - **Flat** — top-level `input`/`output`/`cache_read`/`cache_write`/`currency`
-    (all `$`/Mtok) applied to every model (see `rates.example.json`).
-  - **Per-model** — a `models` map keyed by telemetry model id (e.g.
-    `claude-opus-4.8`), each with the same rate keys, plus an optional top-level
-    `default` block and `currency` (see `rates.copilot.json`). Each call is
-    priced with its own model's rate; calls with no matching rate and no
-    `default` are excluded and counted in a note. `--rate-*` flags override the
-    `default`.
-  Cost is an estimate, not billing-grade. `fresh_input = input − cache_rd −
-  cache_cr` is what gets the full input rate; `cache_write` (Anthropic only)
-  defaults to the input rate when omitted.
+- Cost: pass a `--rates FILE` (or `$COPILOT_TOKEN_RATES`) JSON file to add an
+  `est_cost` column. The file is a `models` map keyed by telemetry model id
+  (e.g. `claude-opus-4.8`), each with `input`/`output`/`cache_read`/`cache_write`
+  rates (all `$`/Mtok), plus optional top-level `currency` and a `default` block
+  (see `rates.copilot.json`). Each call is priced with its own model's rate;
+  calls with no matching rate are excluded and counted in a note unless a
+  `default` block or `--rate-*` flags supply a fallback (`--rate-*` overrides the
+  `default`). Cost is an estimate, not billing-grade. `fresh_input = input −
+  cache_rd − cache_cr` is what gets the full input rate; `cache_write` (Anthropic
+  only) defaults to the input rate when omitted.
 - Tests: `python3 "$SKILL_DIR/scripts/test_analyze_tokens.py"` (stdlib only).

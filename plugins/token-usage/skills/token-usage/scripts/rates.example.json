@@ -1,8 +1,0 @@
-{
-  "_comment": "FLAT single-rate example for cost ESTIMATES (not billing-grade). Applies one rate to every model. For real, per-model Copilot pricing use rates.copilot.json instead (a 'models' map). Pass via --rates <file> or export COPILOT_TOKEN_RATES=<file>. Values below are illustrative placeholders.",
-  "currency": "$",
-  "input": 15.0,
-  "output": 75.0,
-  "cache_read": 1.5,
-  "cache_write": 18.75
-}

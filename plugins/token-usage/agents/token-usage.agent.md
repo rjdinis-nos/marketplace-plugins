@@ -88,21 +88,21 @@ cache buckets separately.
    Narrow with `--since/--until YYYY-MM-DD` or rank with `--top N`. Add
    `--show-time` for first/last activity datetime (UTC) columns.
 
-4. **Estimate cost (only when asked).** Run the analyzer with rates — never
-   hand-compute. Prefer the bundled **per-model** table so each model is priced
-   with its own rate automatically (works with any `--by`):
+4. **Estimate cost (only when asked).** Run the analyzer with the bundled
+   per-model rates table so each model is priced with its own rate automatically
+   (works with any `--by`) — never hand-compute:
    ```bash
    python3 <skill-dir>/scripts/analyze_tokens.py --by model --rates <skill-dir>/scripts/rates.copilot.json
-   # flat single-rate alternative: --rates rates.example.json
-   # or per-flag default/fallback: --rate-input 5 --rate-output 25 --rate-cache-read 0.5 --rate-cache-write 6.25
+   # optional fallback for models not in the table: --rate-input 5 --rate-output 25 --rate-cache-read 0.5 --rate-cache-write 6.25
    ```
    `rates.copilot.json` is a snapshot of GitHub's published Copilot pricing
    (per 1M tokens; source URL + retrieval date inside the file). It maps the
    telemetry model id (e.g. `claude-opus-4.8`) to `input`/`cache_read`/
    `cache_write`/`output`; calls whose model has no matching rate are excluded
-   from the cost (the analyzer reports how many). Set `$COPILOT_TOKEN_RATES` to a
-   file to make it the default. **Always** label cost as an **estimate**, state
-   the rates source, note it isn't billing-grade (real invoices depend on plan
+   from the cost (the analyzer reports how many) unless a `default` block or
+   `--rate-*` flags supply a fallback. Set `$COPILOT_TOKEN_RATES` to a file to
+   make it the default. **Always** label cost as an **estimate**, state the rates
+   source, note it isn't billing-grade (real invoices depend on plan
    allowances/AI-credit conversion), and **verify the snapshot is current** —
    prices change. Do not invent rates silently.
 
