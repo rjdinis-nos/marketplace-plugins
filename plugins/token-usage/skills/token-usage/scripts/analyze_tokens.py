@@ -1,0 +1,303 @@
+#!/usr/bin/env python3
+"""Analyze GitHub Copilot CLI token consumption from OpenTelemetry output.
+
+Reads the JSON-lines file produced by the CLI's OTel file exporter
+(COPILOT_OTEL_FILE_EXPORTER_PATH) and aggregates token usage that follows
+the OTel GenAI Semantic Conventions.
+
+Token data is read from two possible sources:
+  * spans   -> attributes gen_ai.usage.input_tokens / output_tokens /
+               reasoning.output_tokens / cache_read.input_tokens /
+               cache_creation.input_tokens
+  * metrics -> the gen_ai.client.token.usage histogram, split by the
+               gen_ai.token.type attribute (input/output)
+
+The file is walked recursively, so it works regardless of the exact
+OTLP nesting. Output is a per-model / per-day / per-session summary.
+"""
+from __future__ import annotations
+
+import argparse
+import glob
+import gzip
+import json
+import os
+import sys
+from collections import defaultdict
+
+USAGE_KEYS = {
+    "gen_ai.usage.input_tokens": "input",
+    "gen_ai.usage.output_tokens": "output",
+    "gen_ai.usage.reasoning.output_tokens": "reasoning",
+    "gen_ai.usage.cache_read.input_tokens": "cache_read",
+    "gen_ai.usage.cache_creation.input_tokens": "cache_creation",
+}
+TOKEN_METRIC = "gen_ai.client.token.usage"
+
+
+def _scalar(v):
+    """Decode an OTLP AnyValue or a plain scalar."""
+    if isinstance(v, dict):
+        for k in ("intValue", "doubleValue", "stringValue", "boolValue"):
+            if k in v:
+                val = v[k]
+                if k == "intValue":
+                    try:
+                        return int(val)
+                    except (TypeError, ValueError):
+                        return val
+                return val
+        return None
+    return v
+
+
+def attrs_to_map(attributes):
+    """Normalize attributes to a flat dict. Handles OTLP array form
+    [{key, value:{...}}] and plain-object form."""
+    out = {}
+    if isinstance(attributes, list):
+        for a in attributes:
+            if isinstance(a, dict) and "key" in a:
+                out[a["key"]] = _scalar(a.get("value"))
+    elif isinstance(attributes, dict):
+        for k, v in attributes.items():
+            out[k] = _scalar(v)
+    return out
+
+
+def model_of(amap):
+    return (
+        amap.get("gen_ai.response.model")
+        or amap.get("gen_ai.request.model")
+        or "unknown"
+    )
+
+
+def session_of(amap):
+    return amap.get("gen_ai.conversation.id") or amap.get("session.id") or "unknown"
+
+
+def day_of(node):
+    """Best-effort date from a span/datapoint timestamp (nanoseconds)."""
+    for key in ("startTimeUnixNano", "timeUnixNano", "endTimeUnixNano"):
+        ts = node.get(key)
+        if ts:
+            try:
+                import datetime
+
+                secs = int(ts) / 1e9
+                return datetime.datetime.utcfromtimestamp(secs).strftime("%Y-%m-%d")
+            except (TypeError, ValueError, OverflowError):
+                pass
+    return "unknown"
+
+
+class Agg:
+    def __init__(self):
+        self.input = 0
+        self.output = 0
+        self.reasoning = 0
+        self.cache_read = 0
+        self.cache_creation = 0
+        self.calls = 0
+
+    def add_span(self, amap):
+        found = False
+        for key, field in USAGE_KEYS.items():
+            if key in amap and amap[key] is not None:
+                try:
+                    setattr(self, field, getattr(self, field) + int(amap[key]))
+                    found = True
+                except (TypeError, ValueError):
+                    pass
+        if found:
+            self.calls += 1
+        return found
+
+    @property
+    def total(self):
+        return self.input + self.output
+
+    def row(self):
+        return [
+            self.calls,
+            self.input,
+            self.output,
+            self.reasoning,
+            self.cache_read,
+            self.cache_creation,
+            self.total,
+        ]
+
+
+def walk(node, on_span, on_metric):
+    if isinstance(node, dict):
+        # A span/log record carries an attributes collection.
+        if "attributes" in node and ("startTimeUnixNano" in node or "spanId" in node or "name" in node):
+            on_span(node)
+        # A metric object.
+        if node.get("name") == TOKEN_METRIC or ("sum" in node and node.get("name") == TOKEN_METRIC):
+            on_metric(node)
+        for v in node.values():
+            walk(v, on_span, on_metric)
+    elif isinstance(node, list):
+        for v in node:
+            walk(v, on_span, on_metric)
+
+
+def _open_text(path):
+    """Open a log file as text, transparently decompressing .gz."""
+    if path.endswith(".gz"):
+        return gzip.open(path, "rt", encoding="utf-8", errors="ignore")
+    return open(path, "r", encoding="utf-8", errors="ignore")
+
+
+def resolve_paths(path, include_rotated):
+    """Return the list of files to read. With include_rotated, also pick up
+    rotated/compressed siblings produced by the rotator (e.g. otel-signals.jsonl.1,
+    otel-signals.jsonl-20260529.gz)."""
+    paths = [path] if os.path.exists(path) else []
+    if include_rotated:
+        seen = set(paths)
+        for sib in glob.glob(glob.escape(path) + "*"):
+            if sib not in seen and os.path.isfile(sib):
+                paths.append(sib)
+                seen.add(sib)
+    return paths
+
+
+def analyze(paths, group_by):
+    groups = defaultdict(Agg)
+    span_usage_found = False
+    metric_input = 0
+    metric_output = 0
+
+    def on_span(node):
+        nonlocal span_usage_found
+        amap = attrs_to_map(node.get("attributes"))
+        if not any(k in amap for k in USAGE_KEYS):
+            return
+        if group_by == "model":
+            key = model_of(amap)
+        elif group_by == "session":
+            key = session_of(amap)
+        elif group_by == "day":
+            key = day_of(node)
+        else:
+            key = "all"
+        if groups[key].add_span(amap):
+            span_usage_found = True
+
+    def on_metric(node):
+        nonlocal metric_input, metric_output
+        dps = (node.get("histogram") or node.get("sum") or {}).get("dataPoints", [])
+        for dp in dps:
+            amap = attrs_to_map(dp.get("attributes"))
+            ttype = amap.get("gen_ai.token.type")
+            val = dp.get("sum")
+            if val is None:
+                val = _scalar(dp.get("asInt") or dp.get("asDouble"))
+            try:
+                val = int(val)
+            except (TypeError, ValueError):
+                continue
+            if ttype == "input":
+                metric_input += val
+            elif ttype == "output":
+                metric_output += val
+
+    for path in paths:
+        with _open_text(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    doc = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                walk(doc, on_span, on_metric)
+
+    return groups, span_usage_found, metric_input, metric_output
+
+
+def fmt_table(groups, group_by):
+    headers = [group_by, "calls", "input", "output", "reasoning", "cache_rd", "cache_cr", "total"]
+    rows = []
+    tot = Agg()
+    for key in sorted(groups, key=lambda k: -groups[k].total):
+        g = groups[key]
+        rows.append([key] + g.row())
+        for f in ("input", "output", "reasoning", "cache_read", "cache_creation", "calls"):
+            setattr(tot, f, getattr(tot, f) + getattr(g, f))
+    rows.append(["TOTAL"] + tot.row())
+    widths = [max(len(str(r[i])) for r in [headers] + rows) for i in range(len(headers))]
+    out = []
+    for r in [headers] + rows:
+        out.append("  ".join(str(c).ljust(widths[i]) for i, c in enumerate(r)))
+    out.insert(1, "  ".join("-" * w for w in widths))
+    return "\n".join(out)
+
+
+def main():
+    default_path = os.environ.get("COPILOT_OTEL_FILE_EXPORTER_PATH") or os.path.expanduser(
+        "~/.copilot/logs/otel-signals.jsonl"
+    )
+    p = argparse.ArgumentParser(description="Summarize Copilot CLI token usage from OTel output.")
+    p.add_argument("path", nargs="?", default=default_path, help="OTel JSONL file (default: $COPILOT_OTEL_FILE_EXPORTER_PATH)")
+    p.add_argument("--by", choices=["model", "session", "day", "all"], default="model", help="grouping dimension")
+    p.add_argument("--json", action="store_true", help="emit JSON instead of a table")
+    p.add_argument(
+        "--current-only",
+        action="store_true",
+        help="read only the active log; by default rotated/compressed siblings (PATH*, .gz) are included",
+    )
+    args = p.parse_args()
+
+    paths = resolve_paths(args.path, include_rotated=not args.current_only)
+    if not paths:
+        sys.exit(
+            f"OTel file not found: {args.path}\n"
+            "Enable the exporter first, e.g.:\n"
+            '  export COPILOT_OTEL_FILE_EXPORTER_PATH="$HOME/.copilot/logs/otel-signals.jsonl"\n'
+            "then run copilot and retry."
+        )
+
+    groups, span_found, m_in, m_out = analyze(paths, args.by)
+
+    if args.json:
+        result = {
+            "source": "spans" if span_found else "metrics",
+            "groups": {
+                k: {
+                    "calls": g.calls,
+                    "input_tokens": g.input,
+                    "output_tokens": g.output,
+                    "reasoning_output_tokens": g.reasoning,
+                    "cache_read_input_tokens": g.cache_read,
+                    "cache_creation_input_tokens": g.cache_creation,
+                    "total_tokens": g.total,
+                }
+                for k, g in groups.items()
+            },
+            "metric_token_usage": {"input": m_in, "output": m_out, "total": m_in + m_out},
+        }
+        print(json.dumps(result, indent=2))
+        return
+
+    if span_found:
+        print(fmt_table(groups, args.by))
+        print(f"\n(source: span attributes gen_ai.usage.*  files: {len(paths)})")
+    elif m_in or m_out:
+        print("No per-call span usage found; reporting gen_ai.client.token.usage metric:")
+        print(f"  input tokens : {m_in}")
+        print(f"  output tokens: {m_out}")
+        print(f"  total tokens : {m_in + m_out}")
+        print(f"\n(source: token metric  files: {len(paths)})")
+    else:
+        print("No GenAI token usage found in the file.")
+        print("Make sure OTel is enabled and at least one model call has occurred.")
+
+
+if __name__ == "__main__":
+    main()

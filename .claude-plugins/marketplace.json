@@ -11,27 +11,25 @@
   },
   "plugins": [
     {
-      "name": "mattpocock-skills",
-      "description": "Skills for Real Engineers — straight from Matt Pocock's .claude directory (diagnose, tdd, triage, prototype, and more).",
-      "source": {
-        "source": "github",
-        "repo": "mattpocock/skills"
-      },
+      "name": "token-usage",
+      "description": "Enable OpenTelemetry token capture in the GitHub Copilot CLI and report token consumption (input/output/cache/reasoning) per model, session, or day. Bundles the token-usage agent and skill.",
+      "source": "./plugins/token-usage",
       "author": {
-        "name": "Matt Pocock",
-        "url": "https://github.com/mattpocock"
+        "name": "Ricardo Dinis",
+        "url": "https://github.com/rjdinis-nos"
       },
-      "homepage": "https://github.com/mattpocock/skills",
-      "repository": "https://github.com/mattpocock/skills",
+      "homepage": "https://github.com/rjdinis-nos/marketplace-plugins",
+      "repository": "https://github.com/rjdinis-nos/marketplace-plugins",
       "license": "MIT",
-      "category": "engineering",
+      "category": "observability",
       "keywords": [
-        "skills",
-        "engineering",
-        "productivity",
-        "tdd",
-        "diagnose",
-        "triage"
+        "copilot-cli",
+        "opentelemetry",
+        "otel",
+        "tokens",
+        "usage",
+        "cost",
+        "observability"
       ]
     }
   ]

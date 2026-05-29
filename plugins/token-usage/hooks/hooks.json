@@ -1,0 +1,14 @@
+{
+  "SessionStart": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "sh \"$CLAUDE_PLUGIN_ROOT/skills/token-usage/scripts/rotate_otel_log.sh\"",
+          "async": true,
+          "statusMessage": "Checking OTel token log size for rotation"
+        }
+      ]
+    }
+  ]
+}

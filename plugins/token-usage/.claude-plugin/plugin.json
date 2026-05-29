@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "token-usage",
+  "version": "0.1.0",
+  "description": "Enable OpenTelemetry token capture in the GitHub Copilot CLI and report token consumption (input/output/cache/reasoning) per model, session, or day. Bundles the token-usage agent and skill plus an analyzer script.",
+  "author": {
+    "name": "Ricardo Dinis",
+    "url": "https://github.com/rjdinis-nos"
+  },
+  "homepage": "https://github.com/rjdinis-nos/marketplace-plugins",
+  "repository": "https://github.com/rjdinis-nos/marketplace-plugins",
+  "license": "MIT",
+  "keywords": [
+    "copilot-cli",
+    "opentelemetry",
+    "otel",
+    "tokens",
+    "usage",
+    "cost",
+    "observability"
+  ]
+}
