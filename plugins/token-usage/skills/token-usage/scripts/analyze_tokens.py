@@ -82,19 +82,27 @@ def _fmt_day(secs):
     return datetime.datetime.fromtimestamp(secs, datetime.timezone.utc).strftime("%Y-%m-%d")
 
 
-def day_of(node):
-    """Best-effort date from a span/datapoint timestamp.
+def _fmt_datetime(secs):
+    return datetime.datetime.fromtimestamp(secs, datetime.timezone.utc).strftime("%Y-%m-%d %H:%M")
 
-    Handles both the raw OTLP/protobuf style (single integer nanoseconds under
+
+def _iso(secs):
+    if secs is None:
+        return None
+    return datetime.datetime.fromtimestamp(secs, datetime.timezone.utc).isoformat()
+
+
+def node_secs(node):
+    """Best-effort epoch seconds (float) from a span/datapoint timestamp, or
+    None. Handles both the raw OTLP/protobuf style (integer nanoseconds under
     *UnixNano keys) and the OpenTelemetry JS SDK style used by the CLI's file
-    exporter (startTime/endTime as a [seconds, nanoseconds] pair).
-    """
+    exporter (startTime/endTime as a [seconds, nanoseconds] pair)."""
     # OTLP/protobuf style: single integer nanoseconds since epoch.
     for key in ("startTimeUnixNano", "timeUnixNano", "endTimeUnixNano"):
         ts = node.get(key)
         if ts:
             try:
-                return _fmt_day(int(ts) / 1e9)
+                return int(ts) / 1e9
             except (TypeError, ValueError, OverflowError):
                 pass
 
@@ -103,11 +111,17 @@ def day_of(node):
         ts = node.get(key)
         if isinstance(ts, (list, tuple)) and ts:
             try:
-                return _fmt_day(int(ts[0]))
+                return float(ts[0]) + (float(ts[1]) / 1e9 if len(ts) > 1 else 0.0)
             except (TypeError, ValueError, OverflowError, IndexError):
                 pass
 
-    return "unknown"
+    return None
+
+
+def day_of(node):
+    """Best-effort UTC date string from a span/datapoint timestamp."""
+    secs = node_secs(node)
+    return _fmt_day(secs) if secs is not None else "unknown"
 
 
 def normalize_model(name):
@@ -228,6 +242,16 @@ class Agg:
         self.cost_acc = 0.0
         self.naive_acc = 0.0
         self.priced_calls = 0
+        self.first_ts = None
+        self.last_ts = None
+
+    def observe_time(self, secs):
+        if secs is None:
+            return
+        if self.first_ts is None or secs < self.first_ts:
+            self.first_ts = secs
+        if self.last_ts is None or secs > self.last_ts:
+            self.last_ts = secs
 
     def add_span(self, amap, pricing=None):
         vals = {}
@@ -259,6 +283,8 @@ class Agg:
         for f in ("input", "output", "reasoning", "cache_read", "cache_creation", "calls",
                   "cost_acc", "naive_acc", "priced_calls"):
             setattr(self, f, getattr(self, f) + getattr(other, f))
+        self.observe_time(other.first_ts)
+        self.observe_time(other.last_ts)
 
     @property
     def fresh_input(self):
@@ -363,6 +389,7 @@ def analyze(paths, group_by, since=None, until=None, pricing=None):
             key = "all"
         if groups[key].add_span(amap, pricing):
             span_usage_found = True
+            groups[key].observe_time(node_secs(node))
 
     def on_metric(node):
         nonlocal metric_input, metric_output
@@ -401,12 +428,18 @@ def _money(currency, val):
     return f"{currency}{val:,.2f}" if val is not None else "n/a"
 
 
-def fmt_table(groups, group_by, pricing=None, top=None):
+def _dt(secs):
+    return _fmt_datetime(secs) if secs is not None else "unknown"
+
+
+def fmt_table(groups, group_by, pricing=None, top=None, show_time=False):
     show_cost = pricing is not None and pricing.any()
     cur = pricing.currency if pricing is not None else "$"
     headers = [group_by, "calls", "input", "output", "reasoning", "cache_rd", "cache_cr", "total"]
     if show_cost:
         headers.append("est_cost")
+    if show_time:
+        headers += ["first (UTC)", "last (UTC)"]
     ordered = sorted(groups, key=lambda k: -groups[k].total)
     tot = Agg()
     for key in ordered:
@@ -419,10 +452,14 @@ def fmt_table(groups, group_by, pricing=None, top=None):
         row = [key] + g.row()
         if show_cost:
             row.append(_money(cur, g.est_cost))
+        if show_time:
+            row += [_dt(g.first_ts), _dt(g.last_ts)]
         rows.append(row)
     total_row = ["TOTAL"] + tot.row()
     if show_cost:
         total_row.append(_money(cur, tot.est_cost))
+    if show_time:
+        total_row += [_dt(tot.first_ts), _dt(tot.last_ts)]
     rows.append(total_row)
     widths = [max(len(str(r[i])) for r in [headers] + rows) for i in range(len(headers))]
     out = []
@@ -453,6 +490,7 @@ def main():
     p.add_argument("--by", choices=["model", "session", "day", "all"], default="model", help="grouping dimension")
     p.add_argument("--json", action="store_true", help="emit JSON instead of a table")
     p.add_argument("--top", type=int, default=None, metavar="N", help="show only the top N groups by total tokens")
+    p.add_argument("--show-time", action="store_true", help="add first/last activity datetime (UTC) columns")
     p.add_argument("--since", metavar="YYYY-MM-DD", help="only count calls on/after this UTC date")
     p.add_argument("--until", metavar="YYYY-MM-DD", help="only count calls on/before this UTC date")
     p.add_argument("--rates", metavar="FILE", help="JSON rates file: either flat (input/output/cache_read/cache_write) or a per-model map under \"models\" (e.g. scripts/rates.copilot.json). Also via $COPILOT_TOKEN_RATES")
@@ -500,6 +538,14 @@ def main():
                     "total_tokens": g.total,
                     **(
                         {
+                            "first_ts": _iso(g.first_ts),
+                            "last_ts": _iso(g.last_ts),
+                        }
+                        if args.show_time
+                        else {}
+                    ),
+                    **(
+                        {
                             "est_cost": round(g.est_cost, 6) if g.est_cost is not None else None,
                             "priced_calls": g.priced_calls,
                         }
@@ -522,7 +568,7 @@ def main():
         return
 
     if span_found:
-        print(fmt_table(groups, args.by, pricing=pricing, top=args.top))
+        print(fmt_table(groups, args.by, pricing=pricing, top=args.top, show_time=args.show_time))
         print(f"\n(source: span attributes gen_ai.usage.*  files: {len(paths)})")
     elif m_in or m_out:
         print("No per-call span usage found; reporting gen_ai.client.token.usage metric:")

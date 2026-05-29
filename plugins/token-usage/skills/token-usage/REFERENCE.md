@@ -75,12 +75,13 @@ handles both array-form and plain-object attributes.
 
 ```
 python3 "$SKILL_DIR/scripts/analyze_tokens.py" [PATH] [--by model|session|day|all] [--json]
-        [--top N] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--current-only]
+        [--top N] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--show-time] [--current-only]
         [--rates FILE] [--rate-input N] [--rate-output N] [--rate-cache-read N] [--rate-cache-write N] [--currency SYM]
 ```
 (`$SKILL_DIR` is this skill's directory, i.e. the folder containing this file.)
 - `PATH` defaults to `$COPILOT_OTEL_FILE_EXPORTER_PATH`, then `~/.copilot/logs/otel-signals.jsonl`.
 - By default also reads rotated/compressed siblings (`PATH*`, including `.gz`); use `--current-only` to read just the active file.
+- `--show-time` adds `first`/`last` activity datetime columns (UTC, derived from span timestamps); in `--json` these appear as `first_ts`/`last_ts` ISO-8601 strings.
 - Prefers per-call span attributes; falls back to the token metric if no span usage is present.
 - Cost: pass a `--rates FILE` (or `$COPILOT_TOKEN_RATES`) JSON file, or
   `--rate-*` flags, to add an `est_cost` column. Two file shapes are accepted:
