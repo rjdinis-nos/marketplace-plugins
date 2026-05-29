@@ -35,8 +35,22 @@ Conventions, so the numbers are exact (billing-grade), not estimates.
 ### Report token usage
 - `--by model` (default), `--by session`, `--by day`, or `--by all`
 - `--json` for machine-readable output
+- `--top N` to show only the largest N groups; `--since`/`--until YYYY-MM-DD`
+  to restrict to a UTC date window
 - Output columns: calls, input, output, reasoning, cache_rd (cache read),
   cache_cr (cache creation), total. `total = input + output`.
+
+### Estimate cost
+Cost is an **estimate** from rates you supply (rates are not in the telemetry):
+```bash
+python3 "$SKILL_DIR/scripts/analyze_tokens.py" --by model --rates "$SKILL_DIR/scripts/rates.example.json"
+# or per-flag: --rate-input 15 --rate-output 75 --rate-cache-read 1.5 --rate-cache-write 18.75
+# or: export COPILOT_TOKEN_RATES=/path/to/rates.json
+```
+Adds an `est_cost` column and a cache-savings summary. `cache_rd`/`cache_cr` are
+subsets of `input`, so full-price tokens are `fresh_input = input − cache_rd −
+cache_cr`. Copy `rates.example.json` and replace the placeholder values with your
+real plan/contract rates.
 
 ### Verify OTel is active
 Confirm at least one model call has been logged:

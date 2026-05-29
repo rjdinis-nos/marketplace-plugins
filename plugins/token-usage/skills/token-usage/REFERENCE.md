@@ -25,6 +25,7 @@ Only sessions started *after* activation are captured. Built-in help:
 | `OTEL_RESOURCE_ATTRIBUTES` | Extra resource attributes, comma-separated `key=value`. |
 | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | `"true"` to capture full prompt/response content (sensitive). Default `false`. |
 | `OTEL_LOG_LEVEL` | OTel diagnostic log level: NONE, ERROR, WARN, INFO, DEBUG, VERBOSE, ALL. |
+| `COPILOT_TOKEN_RATES` | Path to a JSON rates file used by `analyze_tokens.py` for cost estimates (keys `input`/`output`/`cache_read`/`cache_write`/`currency`, `$`/Mtok). Read by the analyzer only — not by the CLI. |
 
 ## GenAI signals emitted
 
@@ -73,9 +74,16 @@ handles both array-form and plain-object attributes.
 ## analyze_tokens.py
 
 ```
-python3 "$SKILL_DIR/scripts/analyze_tokens.py" [PATH] [--by model|session|day|all] [--json] [--current-only]
+python3 "$SKILL_DIR/scripts/analyze_tokens.py" [PATH] [--by model|session|day|all] [--json]
+        [--top N] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--current-only]
+        [--rates FILE] [--rate-input N] [--rate-output N] [--rate-cache-read N] [--rate-cache-write N] [--currency SYM]
 ```
 (`$SKILL_DIR` is this skill's directory, i.e. the folder containing this file.)
 - `PATH` defaults to `$COPILOT_OTEL_FILE_EXPORTER_PATH`, then `~/.copilot/logs/otel-signals.jsonl`.
 - By default also reads rotated/compressed siblings (`PATH*`, including `.gz`); use `--current-only` to read just the active file.
 - Prefers per-call span attributes; falls back to the token metric if no span usage is present.
+- Cost flags (or a `--rates`/`$COPILOT_TOKEN_RATES` JSON file with keys
+  `input`/`output`/`cache_read`/`cache_write`/`currency`, all `$`/Mtok) add an
+  `est_cost` column. Cost is an estimate, not billing-grade. `fresh_input =
+  input − cache_rd − cache_cr` is what gets the full input rate.
+- Tests: `python3 "$SKILL_DIR/scripts/test_analyze_tokens.py"` (stdlib only).
