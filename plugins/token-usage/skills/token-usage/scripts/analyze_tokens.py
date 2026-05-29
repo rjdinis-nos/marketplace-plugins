@@ -170,14 +170,14 @@ class Rates:
         return cls(
             input=d.get("input"),
             output=d.get("output"),
-            cache_read=d.get("cache_read", d.get("cached_input")),
+            cache_read=d.get("cache_read"),
             cache_write=d.get("cache_write"),
         )
 
 
 class Pricing:
-    """Resolves per-model Rates. Supports a flat single-rate table, a
-    per-model `models` map, an optional `default`, or CLI rate flags."""
+    """Resolves per-model Rates from a `models` map, with an optional `default`
+    block (or CLI `--rate-*` flags) used for models not in the table."""
 
     def __init__(self, currency="$", default=None):
         self.currency = currency
@@ -215,15 +215,14 @@ class Pricing:
         for key, rec in (data.get("models") or {}).items():
             pricing.models[normalize_model(key)] = Rates.from_dict(rec)
 
-        # Default rates: explicit CLI flags override a flat/`default` file block.
-        flat = data.get("default") or {
-            k: data.get(k) for k in ("input", "output", "cache_read", "cache_write")
-        }
+        # Fallback rate for models not in the table: a `default` file block,
+        # overridden by any explicit CLI --rate-* flags.
+        default_block = data.get("default") or {}
         merged = {
-            "input": args.rate_input if args.rate_input is not None else flat.get("input"),
-            "output": args.rate_output if args.rate_output is not None else flat.get("output"),
-            "cache_read": args.rate_cache_read if args.rate_cache_read is not None else flat.get("cache_read"),
-            "cache_write": args.rate_cache_write if args.rate_cache_write is not None else flat.get("cache_write"),
+            "input": args.rate_input if args.rate_input is not None else default_block.get("input"),
+            "output": args.rate_output if args.rate_output is not None else default_block.get("output"),
+            "cache_read": args.rate_cache_read if args.rate_cache_read is not None else default_block.get("cache_read"),
+            "cache_write": args.rate_cache_write if args.rate_cache_write is not None else default_block.get("cache_write"),
         }
         default = Rates.from_dict(merged)
         if default.any():
@@ -468,8 +467,7 @@ def fmt_table(groups, group_by, pricing=None, top=None, show_time=False):
     out.insert(1, "  ".join("-" * w for w in widths))
     table = "\n".join(out)
     if show_cost:
-        mode = "per-model rates" if pricing.per_model() else "flat rates"
-        table += f"\n\nCost estimate ({mode}, {cur}/Mtok)."
+        table += f"\n\nCost estimate (per-model rates, {cur}/Mtok)."
         if tot.est_cost is not None and tot.naive_cost is not None:
             table += (
                 f" Without cache discount: {_money(cur, tot.naive_cost)}"
@@ -493,7 +491,7 @@ def main():
     p.add_argument("--show-time", action="store_true", help="add first/last activity datetime (UTC) columns")
     p.add_argument("--since", metavar="YYYY-MM-DD", help="only count calls on/after this UTC date")
     p.add_argument("--until", metavar="YYYY-MM-DD", help="only count calls on/before this UTC date")
-    p.add_argument("--rates", metavar="FILE", help="JSON rates file: either flat (input/output/cache_read/cache_write) or a per-model map under \"models\" (e.g. scripts/rates.copilot.json). Also via $COPILOT_TOKEN_RATES")
+    p.add_argument("--rates", metavar="FILE", help="per-model JSON rates file with a \"models\" map keyed by model id (e.g. scripts/rates.copilot.json), plus an optional \"default\" block for unlisted models. Also via $COPILOT_TOKEN_RATES")
     p.add_argument("--rate-input", type=float, default=None, help="$/Mtok for fresh input tokens (default/fallback rate)")
     p.add_argument("--rate-output", type=float, default=None, help="$/Mtok for output tokens (default/fallback rate)")
     p.add_argument("--rate-cache-read", type=float, default=None, help="$/Mtok for cache-read input tokens (default/fallback rate)")

@@ -45,12 +45,10 @@ Conventions, so the numbers are exact (billing-grade), not estimates.
 ### Estimate cost
 Cost is an **estimate** from per-Mtok rates (rates are not in the telemetry):
 ```bash
-# Per-model: prices each model with its own rate automatically (recommended)
+# Prices each model with its own rate automatically:
 python3 "$SKILL_DIR/scripts/analyze_tokens.py" --by model --rates "$SKILL_DIR/scripts/rates.copilot.json"
-# Flat single rate for every model:
-python3 "$SKILL_DIR/scripts/analyze_tokens.py" --by model --rates "$SKILL_DIR/scripts/rates.example.json"
-# or per-flag default/fallback: --rate-input 5 --rate-output 25 --rate-cache-read 0.5 --rate-cache-write 6.25
-# or: export COPILOT_TOKEN_RATES=/path/to/rates.json
+# optional fallback for models not in the table: --rate-input 5 --rate-output 25 --rate-cache-read 0.5 --rate-cache-write 6.25
+# or: export COPILOT_TOKEN_RATES=/path/to/rates.copilot.json
 ```
 Adds an `est_cost` column and a cache-savings summary. `cache_rd`/`cache_cr` are
 subsets of `input`, so full-price tokens are `fresh_input = input − cache_rd −
@@ -59,11 +57,11 @@ cache_cr`.
 `rates.copilot.json` is a **snapshot** of GitHub's published Copilot pricing
 (per 1M tokens). It is a `models` map keyed by the telemetry model id (e.g.
 `claude-opus-4.8`), each with `input`/`cache_read`/`cache_write`/`output`; an
-optional top-level `default` block prices any model not in the map (otherwise
-those calls are excluded and counted in a note). Anthropic models have a
-distinct `cache_write` rate; for others omit it and cache-creation tokens fall
-back to the input rate. Prices change — verify against the `_source` URL inside
-the file. For a flat single rate, copy `rates.example.json`.
+optional top-level `default` block (or `--rate-*` flags) prices any model not in
+the map — otherwise those calls are excluded and counted in a note. Anthropic
+models have a distinct `cache_write` rate; for others omit it and cache-creation
+tokens fall back to the input rate. Prices change — verify against the `_source`
+URL inside the file.
 
 ### Verify OTel is active
 Confirm at least one model call has been logged:
