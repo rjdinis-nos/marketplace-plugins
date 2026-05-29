@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "rjdinis-nos",
+  "owner": {
+    "name": "Ricardo Dinis",
+    "url": "https://github.com/rjdinis-nos/marketplace-plugins"
+  },
+  "description": "Curated Claude Code and Copilot CLI plugins.",
+  "metadata": {
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "mattpocock-skills",
+      "description": "Skills for Real Engineers — straight from Matt Pocock's .claude directory (diagnose, tdd, triage, prototype, and more).",
+      "source": {
+        "source": "github",
+        "repo": "mattpocock/skills"
+      },
+      "author": {
+        "name": "Matt Pocock",
+        "url": "https://github.com/mattpocock"
+      },
+      "homepage": "https://github.com/mattpocock/skills",
+      "repository": "https://github.com/mattpocock/skills",
+      "license": "MIT",
+      "category": "engineering",
+      "keywords": [
+        "skills",
+        "engineering",
+        "productivity",
+        "tdd",
+        "diagnose",
+        "triage"
+      ]
+    }
+  ]
+}
