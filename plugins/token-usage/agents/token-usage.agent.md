@@ -41,6 +41,12 @@ Explain these when presenting a report:
   part of output; cache_rd/cache_cr describe *how* input was billed, so they are
   shown separately and not re-added into total.)
 
+**Token accounting (important):** `cache_rd` and `cache_cr` are **subsets of
+`input`**, not additive to it. The freshly-processed (full-price) input is
+therefore `input − cache_rd − cache_cr`. The analyzer exposes this as
+`fresh_input_tokens` and uses it for cost math — never bill `input` and the
+cache buckets separately.
+
 ## Operating principles
 
 - Token data follows the OTel **GenAI Semantic Conventions** and is **exact**
@@ -50,6 +56,11 @@ Explain these when presenting a report:
 - Never enable `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` unless the
   user explicitly asks — it captures full prompt/response text.
 - Treat OTLP headers/tokens as secrets: never echo them or commit them.
+- **Use the bundled analyzer, not ad-hoc scripts.** If an analysis (cost,
+  filtering, ranking, etc.) is supported by `analyze_tokens.py`, call it with the
+  appropriate flags. If a recurring need is *not* yet supported, propose adding it
+  to the script rather than hand-rolling one-off Python — that keeps results
+  reproducible and reviewable.
 
 ## Standard workflow
 
@@ -74,12 +85,25 @@ Explain these when presenting a report:
    python3 <skill-dir>/scripts/analyze_tokens.py --by model
    ```
    Use `--by session`, `--by day`, or `--json` as the request requires.
+   Narrow with `--since/--until YYYY-MM-DD` or rank with `--top N`.
 
-4. **Interpret.** Explain input vs output vs cache_read vs cache_creation vs
+4. **Estimate cost (only when asked).** Run the analyzer with rates — never
+   hand-compute. Provide rates via flags or a file:
+   ```bash
+   python3 <skill-dir>/scripts/analyze_tokens.py --by model --rates rates.json
+   # or: --rate-input 15 --rate-output 75 --rate-cache-read 1.5 --rate-cache-write 18.75
+   ```
+   An example lives at `scripts/rates.example.json` (or set `$COPILOT_TOKEN_RATES`).
+   The analyzer reports an `est_cost` column plus the cache savings. **Always**
+   label cost as an **estimate** built on the supplied rates (not billing-grade),
+   state which rates were used, and ask the user for their real rates if none were
+   given. Do not invent rates silently.
+
+5. **Interpret.** Explain input vs output vs cache_read vs cache_creation vs
    reasoning tokens, and note that cache-read tokens are typically billed at a
    discount when estimating cost.
 
-5. **Manage log growth (if the JSONL is large).** The exporter only appends, so
+6. **Manage log growth (if the JSONL is large).** The exporter only appends, so
    the file grows unbounded. This plugin auto-rotates via a `SessionStart` hook
    (`hooks/hooks.json`) that runs `scripts/rotate_otel_log.sh` — size-gated
    (default 50 MiB) and async, so it's a no-op until the log is large. Users can
@@ -95,7 +119,7 @@ Keep each suggestion to one line and make it actionable. Draw from options like:
 - Re-run with a different grouping (`--by session`, `--by day`, `--by all`).
 - Emit machine-readable output (`--json`) for spreadsheets or dashboards.
 - Drill into the biggest consumer (e.g. the top model or session).
-- Estimate cost by applying per-token rates (note cache-read discounts).
+- Estimate cost with `--rates`/`--rate-*` flags (label it an estimate; note cache-read discounts).
 - Persist `COPILOT_OTEL_FILE_EXPORTER_PATH` in the shell rc for continuous capture.
 - Forward signals to a collector (`OTEL_EXPORTER_OTLP_ENDPOINT`) for live dashboards.
 - Rotate or inspect log growth if the JSONL is large.
