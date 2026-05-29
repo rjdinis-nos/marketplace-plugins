@@ -14,8 +14,8 @@
       "name": "token-usage",
       "description": "Enable OpenTelemetry token capture in the GitHub Copilot CLI and report token consumption (input/output/cache/reasoning) per model, session, or day. Bundles the token-usage agent and skill.",
       "source": {
-        "source": "git-subdir",
-        "url": "rjdinis-nos/marketplace-plugins",
+        "source": "github",
+        "repo": "rjdinis-nos/marketplace-plugins",
         "path": "plugins/token-usage"
       },
       "author": {
