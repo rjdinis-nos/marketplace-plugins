@@ -85,7 +85,8 @@ cache buckets separately.
    python3 <skill-dir>/scripts/analyze_tokens.py --by model
    ```
    Use `--by session`, `--by day`, or `--json` as the request requires.
-   Narrow with `--since/--until YYYY-MM-DD` or rank with `--top N`.
+   Narrow with `--since/--until YYYY-MM-DD` or rank with `--top N`. Add
+   `--show-time` for first/last activity datetime (UTC) columns.
 
 4. **Estimate cost (only when asked).** Run the analyzer with rates — never
    hand-compute. Prefer the bundled **per-model** table so each model is priced

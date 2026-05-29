@@ -112,5 +112,33 @@ class PricingTests(unittest.TestCase):
         self.assertEqual(a.priced_calls, 1)
 
 
+class TimeTrackingTests(unittest.TestCase):
+    def test_node_secs_unixnano(self):
+        self.assertAlmostEqual(at.node_secs({"startTimeUnixNano": "1780087173000000000"}), 1780087173.0, places=3)
+
+    def test_node_secs_array(self):
+        self.assertAlmostEqual(at.node_secs({"startTime": [1780087173, 500000000]}), 1780087173.5, places=3)
+
+    def test_node_secs_missing(self):
+        self.assertIsNone(at.node_secs({}))
+
+    def test_observe_time_tracks_first_last(self):
+        a = at.Agg()
+        a.observe_time(200.0)
+        a.observe_time(100.0)
+        a.observe_time(300.0)
+        self.assertEqual(a.first_ts, 100.0)
+        self.assertEqual(a.last_ts, 300.0)
+
+    def test_merge_spans_time_range(self):
+        a, b = at.Agg(), at.Agg()
+        a.observe_time(100.0)
+        b.observe_time(50.0)
+        b.observe_time(400.0)
+        a.merge(b)
+        self.assertEqual(a.first_ts, 50.0)
+        self.assertEqual(a.last_ts, 400.0)
+
+
 if __name__ == "__main__":
     unittest.main()

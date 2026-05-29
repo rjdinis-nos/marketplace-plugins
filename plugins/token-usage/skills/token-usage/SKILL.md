@@ -37,6 +37,8 @@ Conventions, so the numbers are exact (billing-grade), not estimates.
 - `--json` for machine-readable output
 - `--top N` to show only the largest N groups; `--since`/`--until YYYY-MM-DD`
   to restrict to a UTC date window
+- `--show-time` adds `first`/`last` activity datetime (UTC) columns — handy with
+  `--by session` to see when each session ran
 - Output columns: calls, input, output, reasoning, cache_rd (cache read),
   cache_cr (cache creation), total. `total = input + output`.
 
