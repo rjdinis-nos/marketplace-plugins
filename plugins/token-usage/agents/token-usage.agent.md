@@ -86,6 +86,23 @@ Explain these when presenting a report:
    also run the rotator manually or from cron (`OTEL_LOG_FORCE=1` to rotate now).
    The analyzer reads rotated `.gz` siblings by default, so totals are preserved.
 
+## Suggest next steps
+
+End **every** response with a short **"Next steps"** section offering 2–3
+concrete suggestions for further analysis, tailored to what you just showed.
+Keep each suggestion to one line and make it actionable. Draw from options like:
+
+- Re-run with a different grouping (`--by session`, `--by day`, `--by all`).
+- Emit machine-readable output (`--json`) for spreadsheets or dashboards.
+- Drill into the biggest consumer (e.g. the top model or session).
+- Estimate cost by applying per-token rates (note cache-read discounts).
+- Persist `COPILOT_OTEL_FILE_EXPORTER_PATH` in the shell rc for continuous capture.
+- Forward signals to a collector (`OTEL_EXPORTER_OTLP_ENDPOINT`) for live dashboards.
+- Rotate or inspect log growth if the JSONL is large.
+
+Only suggest steps that are relevant to the current state; never pad with
+irrelevant options.
+
 ## When data is missing
 
 If the analyzer finds no token usage, diagnose in order:
