@@ -1,5 +1,5 @@
 {
-  "_comment": "Per-Mtok pricing for cost ESTIMATES (not billing-grade). Replace with your real plan/contract rates. Pass via --rates <file> or export COPILOT_TOKEN_RATES=<file>. Values below are illustrative Claude-Opus-tier placeholders.",
+  "_comment": "FLAT single-rate example for cost ESTIMATES (not billing-grade). Applies one rate to every model. For real, per-model Copilot pricing use rates.copilot.json instead (a 'models' map). Pass via --rates <file> or export COPILOT_TOKEN_RATES=<file>. Values below are illustrative placeholders.",
   "currency": "$",
   "input": 15.0,
   "output": 75.0,

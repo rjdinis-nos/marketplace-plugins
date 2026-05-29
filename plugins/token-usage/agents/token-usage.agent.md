@@ -88,16 +88,22 @@ cache buckets separately.
    Narrow with `--since/--until YYYY-MM-DD` or rank with `--top N`.
 
 4. **Estimate cost (only when asked).** Run the analyzer with rates — never
-   hand-compute. Provide rates via flags or a file:
+   hand-compute. Prefer the bundled **per-model** table so each model is priced
+   with its own rate automatically (works with any `--by`):
    ```bash
-   python3 <skill-dir>/scripts/analyze_tokens.py --by model --rates rates.json
-   # or: --rate-input 15 --rate-output 75 --rate-cache-read 1.5 --rate-cache-write 18.75
+   python3 <skill-dir>/scripts/analyze_tokens.py --by model --rates <skill-dir>/scripts/rates.copilot.json
+   # flat single-rate alternative: --rates rates.example.json
+   # or per-flag default/fallback: --rate-input 5 --rate-output 25 --rate-cache-read 0.5 --rate-cache-write 6.25
    ```
-   An example lives at `scripts/rates.example.json` (or set `$COPILOT_TOKEN_RATES`).
-   The analyzer reports an `est_cost` column plus the cache savings. **Always**
-   label cost as an **estimate** built on the supplied rates (not billing-grade),
-   state which rates were used, and ask the user for their real rates if none were
-   given. Do not invent rates silently.
+   `rates.copilot.json` is a snapshot of GitHub's published Copilot pricing
+   (per 1M tokens; source URL + retrieval date inside the file). It maps the
+   telemetry model id (e.g. `claude-opus-4.8`) to `input`/`cache_read`/
+   `cache_write`/`output`; calls whose model has no matching rate are excluded
+   from the cost (the analyzer reports how many). Set `$COPILOT_TOKEN_RATES` to a
+   file to make it the default. **Always** label cost as an **estimate**, state
+   the rates source, note it isn't billing-grade (real invoices depend on plan
+   allowances/AI-credit conversion), and **verify the snapshot is current** —
+   prices change. Do not invent rates silently.
 
 5. **Interpret.** Explain input vs output vs cache_read vs cache_creation vs
    reasoning tokens, and note that cache-read tokens are typically billed at a
@@ -119,7 +125,7 @@ Keep each suggestion to one line and make it actionable. Draw from options like:
 - Re-run with a different grouping (`--by session`, `--by day`, `--by all`).
 - Emit machine-readable output (`--json`) for spreadsheets or dashboards.
 - Drill into the biggest consumer (e.g. the top model or session).
-- Estimate cost with `--rates`/`--rate-*` flags (label it an estimate; note cache-read discounts).
+- Estimate cost with `--rates rates.copilot.json` (per-model) or `--rate-*` flags (label it an estimate; verify the snapshot is current).
 - Persist `COPILOT_OTEL_FILE_EXPORTER_PATH` in the shell rc for continuous capture.
 - Forward signals to a collector (`OTEL_EXPORTER_OTLP_ENDPOINT`) for live dashboards.
 - Rotate or inspect log growth if the JSONL is large.
