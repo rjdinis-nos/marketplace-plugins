@@ -35,42 +35,81 @@ class DayOfTests(unittest.TestCase):
 
 
 class AggCostTests(unittest.TestCase):
-    def _agg(self, input, output, cache_read, cache_creation):
-        a = at.Agg()
-        a.input, a.output, a.cache_read, a.cache_creation = input, output, cache_read, cache_creation
-        a.calls = 1
-        return a
+    def _span(self, input, output, cache_read, cache_creation):
+        return {
+            "gen_ai.usage.input_tokens": input,
+            "gen_ai.usage.output_tokens": output,
+            "gen_ai.usage.cache_read.input_tokens": cache_read,
+            "gen_ai.usage.cache_creation.input_tokens": cache_creation,
+            "gen_ai.response.model": "claude-opus-4.8",
+        }
 
     def test_fresh_input_subtracts_cache(self):
-        a = self._agg(1000, 0, 600, 300)
+        a = at.Agg()
+        a.add_span(self._span(1000, 0, 600, 300))
         self.assertEqual(a.fresh_input, 100)
 
     def test_fresh_input_never_negative(self):
-        a = self._agg(500, 0, 600, 300)
+        a = at.Agg()
+        a.add_span(self._span(500, 0, 600, 300))
         self.assertEqual(a.fresh_input, 0)
 
-    def test_cost_none_without_rates(self):
-        a = self._agg(1000, 100, 0, 0)
-        self.assertIsNone(a.cost(at.Rates()))
+    def test_no_cost_without_pricing(self):
+        a = at.Agg()
+        a.add_span(self._span(1000, 100, 0, 0))
+        self.assertIsNone(a.est_cost)
 
     def test_cost_buckets(self):
         rates = at.Rates(input=15.0, output=75.0, cache_read=1.5, cache_write=18.75)
-        a = self._agg(input=1_000_000, output=1_000_000, cache_read=600_000, cache_creation=300_000)
         # fresh = 100_000 -> 1.5 ; output 1M -> 75 ; cache_read 600k -> 0.9 ; cache_write 300k -> 5.625
-        self.assertAlmostEqual(a.cost(rates), 1.5 + 75.0 + 0.9 + 5.625, places=6)
+        self.assertAlmostEqual(
+            rates.cost(1_000_000, 1_000_000, 600_000, 300_000), 1.5 + 75.0 + 0.9 + 5.625, places=6
+        )
 
-    def test_naive_cost_ignores_cache(self):
+    def test_cache_write_falls_back_to_input(self):
+        rates = at.Rates(input=10.0, output=0.0, cache_read=0.0, cache_write=None)
+        # 200k cache-creation tokens billed at the input rate (10/Mtok) -> 2.0
+        self.assertAlmostEqual(rates.cost(200_000, 0, 0, 200_000), 2.0, places=6)
+
+    def test_naive_ignores_cache(self):
         rates = at.Rates(input=15.0, output=75.0, cache_read=1.5, cache_write=18.75)
-        a = self._agg(input=1_000_000, output=1_000_000, cache_read=600_000, cache_creation=300_000)
-        self.assertAlmostEqual(a.naive_cost(rates), 15.0 + 75.0, places=6)
+        self.assertAlmostEqual(rates.naive(1_000_000, 1_000_000), 15.0 + 75.0, places=6)
 
 
-class RatesLoadTests(unittest.TestCase):
-    def test_any_false_when_empty(self):
-        self.assertFalse(at.Rates().any())
+class PricingTests(unittest.TestCase):
+    def test_normalize_model(self):
+        self.assertEqual(at.normalize_model("Claude Opus 4.8"), "claude-opus-4.8")
+        self.assertEqual(at.normalize_model("GPT-4.1[^1]"), "gpt-4.1")
 
-    def test_any_true_with_one_rate(self):
-        self.assertTrue(at.Rates(input=15.0).any())
+    def test_per_model_lookup(self):
+        p = at.Pricing(currency="$")
+        p.models["claude-opus-4.8"] = at.Rates(input=5.0, output=25.0, cache_read=0.5, cache_write=6.25)
+        self.assertTrue(p.any())
+        self.assertTrue(p.per_model())
+        self.assertIsNotNone(p.rates_for("Claude Opus 4.8"))  # display name normalizes
+        self.assertIsNone(p.rates_for("unknown-model"))
+
+    def test_default_fallback(self):
+        p = at.Pricing(currency="$", default=at.Rates(input=1.0, output=2.0))
+        self.assertIsNotNone(p.rates_for("anything"))
+
+    def test_per_model_cost_accumulation(self):
+        p = at.Pricing(currency="$")
+        p.models["claude-opus-4.8"] = at.Rates(input=5.0, output=25.0, cache_read=0.5, cache_write=6.25)
+        a = at.Agg()
+        a.add_span(
+            {
+                "gen_ai.usage.input_tokens": 1_000_000,
+                "gen_ai.usage.output_tokens": 1_000_000,
+                "gen_ai.usage.cache_read.input_tokens": 0,
+                "gen_ai.usage.cache_creation.input_tokens": 0,
+                "gen_ai.response.model": "claude-opus-4.8",
+            },
+            p,
+        )
+        # fresh 1M -> 5 ; output 1M -> 25
+        self.assertAlmostEqual(a.est_cost, 30.0, places=6)
+        self.assertEqual(a.priced_calls, 1)
 
 
 if __name__ == "__main__":

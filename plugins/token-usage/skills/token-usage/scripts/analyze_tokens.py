@@ -110,40 +110,111 @@ def day_of(node):
     return "unknown"
 
 
+def normalize_model(name):
+    """Normalize a model id/display name to a lookup key, e.g.
+    'Claude Opus 4.8' and 'claude-opus-4.8' both -> 'claude-opus-4.8'."""
+    import re
+
+    name = re.sub(r"\[\^?\d+\]", "", str(name or ""))
+    return name.strip().lower().replace(" ", "-")
+
+
 class Rates:
-    """Per-Mtok pricing used to estimate cost. All values are $/Mtok (or the
-    chosen currency unit). Cost figures are ESTIMATES, never billing-grade."""
+    """Per-Mtok pricing for one model (or a default). All values are $/Mtok in
+    the chosen currency. Cost figures are ESTIMATES, never billing-grade.
+    `cache_write=None` means cache-creation tokens are billed at the input rate
+    (e.g. non-Anthropic models that have no separate cache-write price)."""
 
-    FIELDS = ("input", "output", "cache_read", "cache_write")
-
-    def __init__(self, input=0.0, output=0.0, cache_read=0.0, cache_write=0.0, currency="$"):
+    def __init__(self, input=0.0, output=0.0, cache_read=0.0, cache_write=None):
         self.input = float(input or 0.0)
         self.output = float(output or 0.0)
         self.cache_read = float(cache_read or 0.0)
-        self.cache_write = float(cache_write or 0.0)
-        self.currency = currency
+        self.cache_write = None if cache_write is None else float(cache_write)
 
     def any(self):
-        return any(getattr(self, f) for f in self.FIELDS)
+        return any((self.input, self.output, self.cache_read, self.cache_write or 0.0))
+
+    @property
+    def _cache_write(self):
+        return self.cache_write if self.cache_write is not None else self.input
+
+    def cost(self, input, output, cache_read, cache_creation):
+        fresh = max(input - cache_read - cache_creation, 0)
+        return (
+            fresh / 1e6 * self.input
+            + cache_creation / 1e6 * self._cache_write
+            + cache_read / 1e6 * self.cache_read
+            + output / 1e6 * self.output
+        )
+
+    def naive(self, input, output):
+        """Cost with no prompt-cache discount (all input at the input rate)."""
+        return input / 1e6 * self.input + output / 1e6 * self.output
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(
+            input=d.get("input"),
+            output=d.get("output"),
+            cache_read=d.get("cache_read", d.get("cached_input")),
+            cache_write=d.get("cache_write"),
+        )
+
+
+class Pricing:
+    """Resolves per-model Rates. Supports a flat single-rate table, a
+    per-model `models` map, an optional `default`, or CLI rate flags."""
+
+    def __init__(self, currency="$", default=None):
+        self.currency = currency
+        self.default = default
+        self.models = {}
+
+    def any(self):
+        if self.default and self.default.any():
+            return True
+        return any(r.any() for r in self.models.values())
+
+    def per_model(self):
+        return bool(self.models)
+
+    def rates_for(self, model):
+        r = self.models.get(normalize_model(model))
+        if r and r.any():
+            return r
+        if self.default and self.default.any():
+            return self.default
+        return None
 
     @classmethod
     def from_args(cls, args):
         data = {}
-        if getattr(args, "rates", None):
-            with open(os.path.expanduser(args.rates), "r", encoding="utf-8") as fh:
+        path = getattr(args, "rates", None) or os.environ.get("COPILOT_TOKEN_RATES")
+        if path:
+            with open(os.path.expanduser(path), "r", encoding="utf-8") as fh:
                 data = json.load(fh)
-        elif os.environ.get("COPILOT_TOKEN_RATES"):
-            with open(os.path.expanduser(os.environ["COPILOT_TOKEN_RATES"]), "r", encoding="utf-8") as fh:
-                data = json.load(fh)
-        # Explicit CLI flags override file/env values.
-        merged = {
-            "input": args.rate_input if args.rate_input is not None else data.get("input"),
-            "output": args.rate_output if args.rate_output is not None else data.get("output"),
-            "cache_read": args.rate_cache_read if args.rate_cache_read is not None else data.get("cache_read"),
-            "cache_write": args.rate_cache_write if args.rate_cache_write is not None else data.get("cache_write"),
-        }
+
         currency = args.currency or data.get("currency") or "$"
-        return cls(currency=currency, **{k: v for k, v in merged.items() if v is not None})
+        pricing = cls(currency=currency)
+
+        # Per-model map.
+        for key, rec in (data.get("models") or {}).items():
+            pricing.models[normalize_model(key)] = Rates.from_dict(rec)
+
+        # Default rates: explicit CLI flags override a flat/`default` file block.
+        flat = data.get("default") or {
+            k: data.get(k) for k in ("input", "output", "cache_read", "cache_write")
+        }
+        merged = {
+            "input": args.rate_input if args.rate_input is not None else flat.get("input"),
+            "output": args.rate_output if args.rate_output is not None else flat.get("output"),
+            "cache_read": args.rate_cache_read if args.rate_cache_read is not None else flat.get("cache_read"),
+            "cache_write": args.rate_cache_write if args.rate_cache_write is not None else flat.get("cache_write"),
+        }
+        default = Rates.from_dict(merged)
+        if default.any():
+            pricing.default = default
+        return pricing
 
 
 class Agg:
@@ -154,19 +225,40 @@ class Agg:
         self.cache_read = 0
         self.cache_creation = 0
         self.calls = 0
+        self.cost_acc = 0.0
+        self.naive_acc = 0.0
+        self.priced_calls = 0
 
-    def add_span(self, amap):
+    def add_span(self, amap, pricing=None):
+        vals = {}
         found = False
         for key, field in USAGE_KEYS.items():
             if key in amap and amap[key] is not None:
                 try:
-                    setattr(self, field, getattr(self, field) + int(amap[key]))
+                    v = int(amap[key])
+                    vals[field] = v
+                    setattr(self, field, getattr(self, field) + v)
                     found = True
                 except (TypeError, ValueError):
                     pass
         if found:
             self.calls += 1
+            if pricing is not None:
+                r = pricing.rates_for(model_of(amap))
+                if r is not None:
+                    inp = vals.get("input", 0)
+                    out = vals.get("output", 0)
+                    crd = vals.get("cache_read", 0)
+                    ccr = vals.get("cache_creation", 0)
+                    self.cost_acc += r.cost(inp, out, crd, ccr)
+                    self.naive_acc += r.naive(inp, out)
+                    self.priced_calls += 1
         return found
+
+    def merge(self, other):
+        for f in ("input", "output", "reasoning", "cache_read", "cache_creation", "calls",
+                  "cost_acc", "naive_acc", "priced_calls"):
+            setattr(self, f, getattr(self, f) + getattr(other, f))
 
     @property
     def fresh_input(self):
@@ -179,23 +271,14 @@ class Agg:
     def total(self):
         return self.input + self.output
 
-    def cost(self, rates):
-        """Estimated cost given a Rates ($/Mtok). Returns None if no rates."""
-        if rates is None or not rates.any():
-            return None
-        return (
-            self.fresh_input / 1e6 * rates.input
-            + self.cache_creation / 1e6 * rates.cache_write
-            + self.cache_read / 1e6 * rates.cache_read
-            + self.output / 1e6 * rates.output
-        )
+    @property
+    def est_cost(self):
+        """Accumulated per-span cost estimate, or None if nothing was priced."""
+        return self.cost_acc if self.priced_calls else None
 
-    def naive_cost(self, rates):
-        """Cost if every input token were billed at the full input rate
-        (i.e. no prompt-cache discount)."""
-        if rates is None or not rates.any():
-            return None
-        return self.input / 1e6 * rates.input + self.output / 1e6 * rates.output
+    @property
+    def naive_cost(self):
+        return self.naive_acc if self.priced_calls else None
 
     def row(self):
         return [
@@ -245,7 +328,7 @@ def resolve_paths(path, include_rotated):
     return paths
 
 
-def analyze(paths, group_by, since=None, until=None):
+def analyze(paths, group_by, since=None, until=None, pricing=None):
     groups = defaultdict(Agg)
     span_usage_found = False
     metric_input = 0
@@ -278,7 +361,7 @@ def analyze(paths, group_by, since=None, until=None):
             key = day_of(node)
         else:
             key = "all"
-        if groups[key].add_span(amap):
+        if groups[key].add_span(amap, pricing):
             span_usage_found = True
 
     def on_metric(node):
@@ -314,17 +397,20 @@ def analyze(paths, group_by, since=None, until=None):
     return groups, span_usage_found, metric_input, metric_output
 
 
-def fmt_table(groups, group_by, rates=None, top=None):
-    show_cost = rates is not None and rates.any()
+def _money(currency, val):
+    return f"{currency}{val:,.2f}" if val is not None else "n/a"
+
+
+def fmt_table(groups, group_by, pricing=None, top=None):
+    show_cost = pricing is not None and pricing.any()
+    cur = pricing.currency if pricing is not None else "$"
     headers = [group_by, "calls", "input", "output", "reasoning", "cache_rd", "cache_cr", "total"]
     if show_cost:
         headers.append("est_cost")
     ordered = sorted(groups, key=lambda k: -groups[k].total)
     tot = Agg()
     for key in ordered:
-        g = groups[key]
-        for f in ("input", "output", "reasoning", "cache_read", "cache_creation", "calls"):
-            setattr(tot, f, getattr(tot, f) + getattr(g, f))
+        tot.merge(groups[key])
     if top is not None:
         ordered = ordered[:top]
     rows = []
@@ -332,11 +418,11 @@ def fmt_table(groups, group_by, rates=None, top=None):
         g = groups[key]
         row = [key] + g.row()
         if show_cost:
-            row.append(f"{rates.currency}{g.cost(rates):,.2f}")
+            row.append(_money(cur, g.est_cost))
         rows.append(row)
     total_row = ["TOTAL"] + tot.row()
     if show_cost:
-        total_row.append(f"{rates.currency}{tot.cost(rates):,.2f}")
+        total_row.append(_money(cur, tot.est_cost))
     rows.append(total_row)
     widths = [max(len(str(r[i])) for r in [headers] + rows) for i in range(len(headers))]
     out = []
@@ -345,16 +431,16 @@ def fmt_table(groups, group_by, rates=None, top=None):
     out.insert(1, "  ".join("-" * w for w in widths))
     table = "\n".join(out)
     if show_cost:
-        naive = tot.naive_cost(rates)
-        cached = tot.cost(rates)
-        table += (
-            f"\n\nCost estimate uses rates ({rates.currency}/Mtok): "
-            f"input={rates.input} output={rates.output} "
-            f"cache_read={rates.cache_read} cache_write={rates.cache_write}"
-            f"\nWithout cache discount: {rates.currency}{naive:,.2f}  |  "
-            f"saved by caching: {rates.currency}{naive - cached:,.2f}"
-            f"\n(estimate only — not billing-grade; supply your real rates)"
-        )
+        mode = "per-model rates" if pricing.per_model() else "flat rates"
+        table += f"\n\nCost estimate ({mode}, {cur}/Mtok)."
+        if tot.est_cost is not None and tot.naive_cost is not None:
+            table += (
+                f" Without cache discount: {_money(cur, tot.naive_cost)}"
+                f"  |  saved by caching: {_money(cur, tot.naive_cost - tot.est_cost)}."
+            )
+        if tot.priced_calls < tot.calls:
+            table += f"\n{tot.calls - tot.priced_calls} of {tot.calls} calls had no matching rate (excluded from cost)."
+        table += "\n(estimate only — not billing-grade; verify rates against your plan)"
     return table
 
 
@@ -369,11 +455,11 @@ def main():
     p.add_argument("--top", type=int, default=None, metavar="N", help="show only the top N groups by total tokens")
     p.add_argument("--since", metavar="YYYY-MM-DD", help="only count calls on/after this UTC date")
     p.add_argument("--until", metavar="YYYY-MM-DD", help="only count calls on/before this UTC date")
-    p.add_argument("--rates", metavar="FILE", help="JSON file with per-Mtok rates (keys: input/output/cache_read/cache_write/currency); also via $COPILOT_TOKEN_RATES")
-    p.add_argument("--rate-input", type=float, default=None, help="$/Mtok for fresh input tokens")
-    p.add_argument("--rate-output", type=float, default=None, help="$/Mtok for output tokens")
-    p.add_argument("--rate-cache-read", type=float, default=None, help="$/Mtok for cache-read input tokens")
-    p.add_argument("--rate-cache-write", type=float, default=None, help="$/Mtok for cache-creation input tokens")
+    p.add_argument("--rates", metavar="FILE", help="JSON rates file: either flat (input/output/cache_read/cache_write) or a per-model map under \"models\" (e.g. scripts/rates.copilot.json). Also via $COPILOT_TOKEN_RATES")
+    p.add_argument("--rate-input", type=float, default=None, help="$/Mtok for fresh input tokens (default/fallback rate)")
+    p.add_argument("--rate-output", type=float, default=None, help="$/Mtok for output tokens (default/fallback rate)")
+    p.add_argument("--rate-cache-read", type=float, default=None, help="$/Mtok for cache-read input tokens (default/fallback rate)")
+    p.add_argument("--rate-cache-write", type=float, default=None, help="$/Mtok for cache-creation input tokens (default/fallback rate)")
     p.add_argument("--currency", default=None, help="currency symbol for cost output (default: $)")
     p.add_argument(
         "--current-only",
@@ -383,7 +469,7 @@ def main():
     args = p.parse_args()
 
     try:
-        rates = Rates.from_args(args)
+        pricing = Pricing.from_args(args)
     except (OSError, json.JSONDecodeError) as e:
         sys.exit(f"Could not read rates: {e}")
 
@@ -396,10 +482,10 @@ def main():
             "then run copilot and retry."
         )
 
-    groups, span_found, m_in, m_out = analyze(paths, args.by, since=args.since, until=args.until)
+    groups, span_found, m_in, m_out = analyze(paths, args.by, since=args.since, until=args.until, pricing=pricing)
 
     if args.json:
-        show_cost = rates.any()
+        show_cost = pricing.any()
         result = {
             "source": "spans" if span_found else "metrics",
             "groups": {
@@ -412,21 +498,31 @@ def main():
                     "cache_creation_input_tokens": g.cache_creation,
                     "fresh_input_tokens": g.fresh_input,
                     "total_tokens": g.total,
-                    **({"est_cost": round(g.cost(rates), 6)} if show_cost else {}),
+                    **(
+                        {
+                            "est_cost": round(g.est_cost, 6) if g.est_cost is not None else None,
+                            "priced_calls": g.priced_calls,
+                        }
+                        if show_cost
+                        else {}
+                    ),
                 }
                 for k, g in groups.items()
             },
             "metric_token_usage": {"input": m_in, "output": m_out, "total": m_in + m_out},
         }
         if show_cost:
-            result["rates"] = {f: getattr(rates, f) for f in Rates.FIELDS}
-            result["rates"]["currency"] = rates.currency
+            result["pricing"] = {
+                "currency": pricing.currency,
+                "per_model": pricing.per_model(),
+                "models_priced": sorted(pricing.models) if pricing.per_model() else None,
+            }
             result["cost_disclaimer"] = "estimate only — not billing-grade"
         print(json.dumps(result, indent=2))
         return
 
     if span_found:
-        print(fmt_table(groups, args.by, rates=rates, top=args.top))
+        print(fmt_table(groups, args.by, pricing=pricing, top=args.top))
         print(f"\n(source: span attributes gen_ai.usage.*  files: {len(paths)})")
     elif m_in or m_out:
         print("No per-call span usage found; reporting gen_ai.client.token.usage metric:")
