@@ -27,12 +27,13 @@ Columns: calls, input, output, reasoning, cache_rd, cache_cr, total [, est_cost]
 
 ## analyze_sessions.py
 ```
-python3 "$SKILL_DIR/scripts/analyze_sessions.py" --report context|growth [PATH]
+python3 "$SKILL_DIR/scripts/analyze_sessions.py" --report context|growth|tools [PATH]
   --by session|model|all  --warn PCT  --top N
   --since/--until YYYY-MM-DD  --json  --current-only
 ```
 - `context` — fill % per group: turns, median/p95/max fill, turns above threshold, ctx_limit.
-- `growth`  — delta per turn: top spikes, by-tool and by-initiator breakdown.
+- `growth`  — delta per turn: top spikes, by-tool and by-initiator breakdown. MCP tools annotated `[mcp]`.
+- `tools`   — `execute_tool` span latency: tool, type (MCP/builtin), calls, avg/p95/max ms, errors.
 
 ## Log rotation
 ```bash

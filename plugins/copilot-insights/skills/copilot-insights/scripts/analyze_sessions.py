@@ -5,10 +5,11 @@ Usage:
   python3 analyze_sessions.py                        # context report by session (default)
   python3 analyze_sessions.py --report context
   python3 analyze_sessions.py --report growth        # context growth drivers
+  python3 analyze_sessions.py --report tools         # tool call latency (builtin + MCP)
   python3 analyze_sessions.py --by model
   python3 analyze_sessions.py --by all
   python3 analyze_sessions.py --warn 60              # warn at 60% fill instead of 70%
-  python3 analyze_sessions.py --top 5                # show top 5 sessions by max fill
+  python3 analyze_sessions.py --top 5                # show top 5 groups
   python3 analyze_sessions.py --since 2026-05-29
   python3 analyze_sessions.py --json
 
@@ -359,7 +360,10 @@ def fmt_growth_table(groups, group_by, top_spikes=10, top=None):
     tool_rows = []
     for k, vals in sorted(tot.tool_deltas.items(), key=lambda x: -(sum(x[1]) / len(x[1]))):
         avg = int(sum(vals) / len(vals))
-        tool_rows.append([k[:22], _fmt_num(avg), _fmt_num(max(vals)), len(vals)])
+        label = k[:22]
+        if _is_mcp_hash(k):
+            label = _mcp_label(k)[:22]
+        tool_rows.append([label, _fmt_num(avg), _fmt_num(max(vals)), len(vals)])
     out.append(_table(["tool", "avg_delta", "max_delta", "turns"], tool_rows))
 
     return "\n".join(out)
@@ -383,6 +387,176 @@ def fmt_growth_json(groups):
             },
         }
     return result
+
+
+# ── tool latency data model ───────────────────────────────────────────────────
+
+_HEX_RE = __import__("re").compile(r"^[0-9a-f]{20,}$")
+_MCP_TOOL_RE = __import__("re").compile(r"^([0-9a-f]{20,})/(.+)$")
+
+
+def _is_mcp_hash(name):
+    """Detect MCP tool entries: hook uses '<server_hash>/<tool_name>' format."""
+    return bool(_MCP_TOOL_RE.match(name))
+
+
+def _mcp_label(name):
+    """Return a short readable label for an MCP tool entry."""
+    m = _MCP_TOOL_RE.match(name)
+    if m:
+        return f"{m.group(2)} [mcp]"
+    return name
+
+
+class ToolAgg:
+    """Aggregates execute_tool span data for one tool name."""
+
+    def __init__(self):
+        self.durations_ms = []
+        self.errors = 0
+        self.is_mcp = False
+        self.mcp_tool_name = None
+        self.first_ts = None
+        self.last_ts = None
+
+    def _observe_time(self, secs):
+        if secs is None:
+            return
+        if self.first_ts is None or secs < self.first_ts:
+            self.first_ts = secs
+        if self.last_ts is None or secs > self.last_ts:
+            self.last_ts = secs
+
+    def add(self, duration_ms, is_error, is_mcp, mcp_tool_name, ts_secs):
+        self.durations_ms.append(duration_ms)
+        if is_error:
+            self.errors += 1
+        if is_mcp:
+            self.is_mcp = True
+        if mcp_tool_name:
+            self.mcp_tool_name = mcp_tool_name
+        self._observe_time(ts_secs)
+
+    @property
+    def calls(self):
+        return len(self.durations_ms)
+
+    @property
+    def avg_ms(self):
+        return int(sum(self.durations_ms) / len(self.durations_ms)) if self.durations_ms else 0
+
+    def percentile(self, p):
+        if not self.durations_ms:
+            return 0
+        s = sorted(self.durations_ms)
+        return s[min(int(len(s) * p / 100), len(s) - 1)]
+
+    @property
+    def max_ms(self):
+        return max(self.durations_ms) if self.durations_ms else 0
+
+
+# ── tool latency parsing ──────────────────────────────────────────────────────
+
+def parse_tools(paths, since=None, until=None):
+    """Return {tool_name: ToolAgg} from execute_tool spans."""
+
+    def in_window(ts_secs):
+        if since is None and until is None:
+            return True
+        d = _day(ts_secs)
+        if d == "unknown":
+            return False
+        if since and d < since:
+            return False
+        if until and d > until:
+            return False
+        return True
+
+    tools = collections.defaultdict(ToolAgg)
+    for path in paths:
+        with _open_text(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    doc = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if doc.get("type") != "span":
+                    continue
+                name = doc.get("name", "")
+                if not name.startswith("execute_tool "):
+                    continue
+
+                attrs = doc.get("attributes", {})
+                tool_name = attrs.get("gen_ai.tool.name", name[len("execute_tool "):])
+                mcp_hash = attrs.get("github.copilot.tool.parameters.mcp_server_name_hash")
+                mcp_tool = attrs.get("github.copilot.tool.parameters.mcp_tool_name")
+                is_mcp = bool(mcp_hash or mcp_tool)
+
+                start = _secs(doc.get("startTime"))
+                end = _secs(doc.get("endTime"))
+                if not in_window(start):
+                    continue
+                duration_ms = int((end - start) * 1000) if (start and end) else 0
+                is_error = doc.get("status", {}).get("code", 0) != 0
+
+                tools[tool_name].add(duration_ms, is_error, is_mcp, mcp_tool, start)
+
+    return tools
+
+
+# ── tool latency formatting ───────────────────────────────────────────────────
+
+def fmt_tools_table(tools, top=None):
+    if not tools:
+        return "No tool execution data found."
+
+    ordered = sorted(tools, key=lambda k: -tools[k].calls)
+    if top is not None:
+        ordered = ordered[:top]
+
+    rows = []
+    for name in ordered:
+        t = tools[name]
+        label = (t.mcp_tool_name or name)[:34]
+        kind = "MCP" if t.is_mcp else "builtin"
+        rows.append([
+            label,
+            kind,
+            t.calls,
+            f"{t.avg_ms:,}",
+            f"{t.percentile(95):,}",
+            f"{t.max_ms:,}",
+            t.errors if t.errors else "-",
+        ])
+
+    out = ["Tool execution latency report\n"]
+    out.append(_table(["tool", "type", "calls", "avg_ms", "p95_ms", "max_ms", "errors"], rows))
+
+    mcp_count = sum(1 for t in tools.values() if t.is_mcp)
+    if mcp_count:
+        out.append(f"\n  {mcp_count} MCP tool(s) detected — latency includes network round-trip to MCP server.")
+    return "\n".join(out)
+
+
+def fmt_tools_json(tools):
+    return {
+        name: {
+            "type": "mcp" if t.is_mcp else "builtin",
+            "mcp_tool_name": t.mcp_tool_name,
+            "calls": t.calls,
+            "avg_ms": t.avg_ms,
+            "p95_ms": t.percentile(95),
+            "max_ms": t.max_ms,
+            "errors": t.errors,
+            "first_ts": _fmt_dt(t.first_ts),
+            "last_ts": _fmt_dt(t.last_ts),
+        }
+        for name, t in tools.items()
+    }
 
 
 
@@ -521,7 +695,7 @@ def main():
     p = argparse.ArgumentParser(description="Copilot CLI session health reports from OTel signals.")
     p.add_argument("path", nargs="?", default=default_path,
                    help="OTel JSONL file (default: $COPILOT_OTEL_FILE_EXPORTER_PATH)")
-    p.add_argument("--report", choices=["context", "growth"], default="context",
+    p.add_argument("--report", choices=["context", "growth", "tools"], default="context",
                    help="report type (default: context)")
     p.add_argument("--by", choices=["session", "model", "all"], default="session",
                    help="grouping dimension (default: session)")
@@ -558,6 +732,18 @@ def main():
         else:
             print(fmt_growth_table(groups, args.by, top_spikes=10, top=args.top))
             print(f"\n(source: chat span tool hooks  files: {len(paths)})")
+        return
+
+    if args.report == "tools":
+        tools = parse_tools(paths, since=args.since, until=args.until)
+        if not tools:
+            print("No tool execution data found in the log.")
+            sys.exit(0)
+        if args.json:
+            print(json.dumps(fmt_tools_json(tools), indent=2))
+        else:
+            print(fmt_tools_table(tools, top=args.top))
+            print(f"\n(source: execute_tool spans  files: {len(paths)})")
         return
 
     groups = analyze_context(paths, args.by, since=args.since, until=args.until)
