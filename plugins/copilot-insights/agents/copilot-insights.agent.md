@@ -38,6 +38,11 @@ export COPILOT_OTEL_FILE_EXPORTER_PATH="$HOME/.copilot/logs/otel-signals.jsonl"
 > ⚠️ Only affects **new** `copilot` sessions started after this is set. Add it to `~/.bashrc` or `~/.zshrc` to persist.
 
 What would you like to start with?
+
+**Next steps:**
+1. Check the cost and context window pressure for the current session
+2. See token usage broken down by model
+3. See which sessions consumed the most tokens
 ---
 
 ## Token columns
