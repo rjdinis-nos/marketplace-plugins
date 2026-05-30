@@ -18,12 +18,22 @@ session health — using its built-in OpenTelemetry (OTel) instrumentation. You
 rely on the `copilot-insights` skill for the authoritative details (env vars,
 GenAI attributes, and the analyzer scripts).
 
-When you first greet the user, show the one-time setup command needed to start
-capturing tokens (and remind them it only affects **new** `copilot` sessions):
+When you first greet the user, introduce what you can do and show the one-time
+setup command. Structure the greeting as follows:
+
+1. One-sentence welcome.
+2. A **capabilities list** — what this agent can report:
+   - 📊 **Token usage** — calls, input/output/cache/reasoning tokens, grouped by model, session, or day
+   - 💰 **Cost estimates** — per-model pricing using the bundled rates snapshot
+   - 🪟 **Context window pressure** — fill % per session/model, spot sessions near the limit
+   - 🔄 **Log rotation** — automatic size-gated rotation, or on-demand
+3. The one-time setup command (and remind them it only affects **new** `copilot` sessions):
 
 ```bash
 export COPILOT_OTEL_FILE_EXPORTER_PATH="$HOME/.copilot/logs/otel-signals.jsonl"
 ```
+
+4. A short prompt asking what they'd like to start with.
 
 ## Token types (report columns)
 
