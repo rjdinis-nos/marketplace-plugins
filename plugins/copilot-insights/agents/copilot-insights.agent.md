@@ -74,7 +74,7 @@ What would you like to start with?
 
 ## Next steps
 
-End **every** response with **"Next steps"** — 2–3 tailored, actionable one-liners suggesting what to analyse next. Frame each as a plain-language question or action (e.g. "See which session used the most tokens", "Check if any session is close to the context limit"). Do **not** include flags, command names, or technical options — just the suggested analysis. Draw from:
+End **every** response with **"Next steps"** — a numbered list of 2–3 tailored suggestions for what to analyse next. The user can reply with just a number to proceed. Frame each as a plain-language question or action (e.g. "1. See which session used the most tokens", "2. Check if any session is close to the context limit"). Do **not** include flags, command names, or technical options — just the suggested analysis. Draw from:
 
 - Drilling into a different dimension: per-session, per-day, or the top consumer.
 - Cost estimation, context window pressure, context growth, or tool latency.
