@@ -7,6 +7,7 @@ Usage:
   python3 analyze_sessions.py --report growth        # context growth drivers
   python3 analyze_sessions.py --report tools         # tool call latency (builtin + MCP)
   python3 analyze_sessions.py --report turns         # per-turn token & latency detail
+  python3 analyze_sessions.py --report compactions   # context compaction events
   python3 analyze_sessions.py --by model
   python3 analyze_sessions.py --by all
   python3 analyze_sessions.py --session fe612bf2     # filter to one session (prefix ok)
@@ -802,6 +803,115 @@ def fmt_context_json(groups, warn_threshold=0.70):
     }
 
 
+# ── compaction detection ──────────────────────────────────────────────────────
+
+# Any drop > MIN_DROP_TOKENS between consecutive turns is flagged as a compaction.
+# ctx_tokens normally only grows, so any meaningful drop is a genuine event.
+_MIN_COMPACTION_DROP = 1_000
+
+
+def detect_compactions(turns_by_session):
+    """Return {session_id: [compaction_dict]} for all sessions."""
+    result = {}
+    for session, turns in turns_by_session.items():
+        events = []
+        for i, t in enumerate(turns):
+            if i == 0:
+                continue
+            prev = turns[i - 1]
+            drop = prev["cur"] - t["cur"]
+            if drop < _MIN_COMPACTION_DROP:
+                continue
+            lim = t.get("token_limit") or prev.get("token_limit") or 0
+            events.append({
+                "turn_index":   i,
+                "turn_id":      t.get("turn_id"),
+                "time":         _fmt_dt(t["ts"]) if t["ts"] else "?",
+                "before_tok":   prev["cur"],
+                "after_tok":    t["cur"],
+                "drop_tok":     drop,
+                "before_fill":  prev["cur"] / lim if lim else 0.0,
+                "after_fill":   t["cur"] / lim if lim else 0.0,
+                "recovered_pct": drop / prev["cur"] if prev["cur"] else 0.0,
+                "tools":        t["tools"],
+                "model":        t["model"],
+                "session":      session,
+            })
+        if events:
+            result[session] = events
+    return result
+
+
+def fmt_compactions_table(compactions_by_session):
+    if not compactions_by_session:
+        return "No compaction events found. (A compaction is a ctx drop > 1,000 tokens between turns.)"
+
+    # ── 1. Event list ─────────────────────────────────────────────────────────
+    all_events = [
+        (sid, ev)
+        for sid, evs in sorted(compactions_by_session.items())
+        for ev in evs
+    ]
+    event_rows = []
+    for sid, ev in all_events:
+        tools_str = ",".join(ev["tools"]) if ev["tools"] else "-"
+        event_rows.append([
+            _short(sid),
+            ev["turn_index"],
+            ev["time"],
+            _pct(ev["before_fill"]),
+            _pct(ev["after_fill"]),
+            f"-{ev['drop_tok']:,}",
+            f"{ev['recovered_pct']:.0%}",
+            tools_str[:30],
+        ])
+    headers = ["session", "turn#", "time", "before", "after", "drop_tok", "recov%", "tools"]
+    out = ["Compaction events\n"]
+    out.append(_table(headers, event_rows))
+
+    # ── 2. Summary per session ────────────────────────────────────────────────
+    out.append("\n── Summary ──")
+    summary_rows = []
+    total_events, total_recovered = 0, 0
+    for sid, evs in sorted(compactions_by_session.items()):
+        n = len(evs)
+        recovered = sum(e["drop_tok"] for e in evs)
+        max_drop = max(e["drop_tok"] for e in evs)
+        total_events += n
+        total_recovered += recovered
+        summary_rows.append([_short(sid), n, f"{recovered:,}", f"{max_drop:,}"])
+    summary_rows.append(["TOTAL", total_events, f"{total_recovered:,}", ""])
+    out.append(_table(["session", "compactions", "total_recovered_tok", "max_single_drop"], summary_rows))
+
+    out.append(
+        "\n  A compaction is triggered automatically when context pressure is high."
+        "\n  The model summarises old turns, freeing space — but earlier detail is lost."
+    )
+    return "\n".join(out)
+
+
+def fmt_compactions_json(compactions_by_session):
+    result = {}
+    for sid, evs in compactions_by_session.items():
+        result[sid] = [
+            {
+                "turn_index":    ev["turn_index"],
+                "turn_id":       ev["turn_id"],
+                "time":          ev["time"],
+                "before_tokens": ev["before_tok"],
+                "after_tokens":  ev["after_tok"],
+                "drop_tokens":   ev["drop_tok"],
+                "before_fill":   round(ev["before_fill"], 4),
+                "after_fill":    round(ev["after_fill"], 4),
+                "recovered_pct": round(ev["recovered_pct"], 4),
+                "tools":         ev["tools"],
+                "model":         ev["model"],
+            }
+            for ev in evs
+        ]
+    return result
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -811,8 +921,8 @@ def main():
     p = argparse.ArgumentParser(description="Copilot CLI session health reports from OTel signals.")
     p.add_argument("path", nargs="?", default=default_path,
                    help="OTel JSONL file (default: $COPILOT_OTEL_FILE_EXPORTER_PATH)")
-    p.add_argument("--report", choices=["context", "growth", "tools", "turns"], default="context",
-                   help="report type (default: context)")
+    p.add_argument("--report", choices=["context", "growth", "tools", "turns", "compactions"],
+                   default="context", help="report type (default: context)")
     p.add_argument("--by", choices=["session", "model", "all"], default="session",
                    help="grouping dimension (default: session)")
     p.add_argument("--session", metavar="SESSION_ID",
@@ -838,6 +948,17 @@ def main():
         )
 
     warn_threshold = args.warn / 100.0
+
+    if args.report == "compactions":
+        turns_by_session = parse_turns(paths, since=args.since, until=args.until,
+                                       session_filter=args.session)
+        compactions = detect_compactions(turns_by_session)
+        if args.json:
+            print(json.dumps(fmt_compactions_json(compactions), indent=2))
+        else:
+            print(fmt_compactions_table(compactions))
+            print(f"\n(source: chat spans  files: {len(paths)})")
+        return
 
     if args.report == "turns":
         turns_by_session = parse_turns(paths, since=args.since, until=args.until,
