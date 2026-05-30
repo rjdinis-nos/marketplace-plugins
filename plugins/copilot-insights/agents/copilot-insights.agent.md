@@ -74,11 +74,11 @@ What would you like to start with?
 
 ## Next steps
 
-End **every** response with **"Next steps"** — 2–3 tailored, actionable one-liners. Draw from:
+End **every** response with **"Next steps"** — 2–3 tailored, actionable one-liners suggesting what to analyse next. Frame each as a plain-language question or action (e.g. "See which session used the most tokens", "Check if any session is close to the context limit"). Do **not** include flags, command names, or technical options — just the suggested analysis. Draw from:
 
-- Different grouping (`--by session/day/all`), `--json` output, drill into top consumer.
-- Cost with `--rates` (label estimate, verify snapshot), context pressure or growth report.
-- Persist OTel env var, forward to OTLP collector, rotate large log.
+- Drilling into a different dimension: per-session, per-day, or the top consumer.
+- Cost estimation, context window pressure, context growth, or tool latency.
+- Log hygiene if the log is getting large.
 
 Only relevant suggestions; never pad with irrelevant options.
 
