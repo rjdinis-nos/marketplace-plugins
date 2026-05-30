@@ -6,8 +6,10 @@ Usage:
   python3 analyze_sessions.py --report context
   python3 analyze_sessions.py --report growth        # context growth drivers
   python3 analyze_sessions.py --report tools         # tool call latency (builtin + MCP)
+  python3 analyze_sessions.py --report turns         # per-turn token & latency detail
   python3 analyze_sessions.py --by model
   python3 analyze_sessions.py --by all
+  python3 analyze_sessions.py --session fe612bf2     # filter to one session (prefix ok)
   python3 analyze_sessions.py --warn 60              # warn at 60% fill instead of 70%
   python3 analyze_sessions.py --top 5                # show top 5 groups
   python3 analyze_sessions.py --since 2026-05-29
@@ -182,7 +184,7 @@ class GrowthAgg:
 
 # ── growth parsing ────────────────────────────────────────────────────────────
 
-def parse_turns(paths, since=None, until=None):
+def parse_turns(paths, since=None, until=None, session_filter=None):
     """Return {session_id: [turn_dict sorted by start_ns]} from all chat spans."""
 
     def in_window(ts_secs):
@@ -213,12 +215,25 @@ def parse_turns(paths, since=None, until=None):
 
                 attrs = doc.get("attributes", {})
                 session = attrs.get("gen_ai.conversation.id", "unknown")
+                if session_filter and not session.startswith(session_filter):
+                    continue
+
                 model = attrs.get("gen_ai.response.model") or attrs.get("gen_ai.request.model", "?")
                 initiator = attrs.get("github.copilot.initiator", "?")
                 span_ts = _secs(doc.get("startTime"))
 
                 if not in_window(span_ts):
                     continue
+
+                # token usage fields from span attributes
+                input_tokens = int(attrs.get("gen_ai.usage.input_tokens", 0))
+                output_tokens = int(attrs.get("gen_ai.usage.output_tokens", 0))
+                cache_rd = int(attrs.get("gen_ai.usage.cache_read.input_tokens", 0))
+                cache_cr = int(attrs.get("gen_ai.usage.cache_creation.input_tokens", 0))
+                reasoning = int(attrs.get("gen_ai.usage.reasoning.output_tokens", 0))
+                ttfc = attrs.get("gen_ai.response.time_to_first_chunk")
+                srv_ms = attrs.get("github.copilot.server_duration")
+                turn_id = attrs.get("github.copilot.turn_id")
 
                 events = doc.get("events", [])
                 usage = next(
@@ -229,6 +244,7 @@ def parse_turns(paths, since=None, until=None):
                     continue
 
                 cur = int(usage["attributes"].get("github.copilot.current_tokens", 0))
+                token_limit = int(usage["attributes"].get("github.copilot.token_limit", 0))
 
                 # tools called this turn: deduplicated from postToolUse hooks
                 seen_tools, tools = set(), []
@@ -246,11 +262,20 @@ def parse_turns(paths, since=None, until=None):
                 raw[session].append({
                     "start_ns": doc.get("startTime", [0, 0]),
                     "cur": cur,
+                    "token_limit": token_limit,
                     "initiator": initiator,
                     "tools": tools,
                     "model": model,
                     "ts": span_ts,
                     "session": session,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cache_rd": cache_rd,
+                    "cache_cr": cache_cr,
+                    "reasoning": reasoning,
+                    "ttfc": ttfc,
+                    "srv_ms": srv_ms,
+                    "turn_id": turn_id,
                 })
 
     result = {}
@@ -389,6 +414,89 @@ def fmt_growth_json(groups):
     return result
 
 
+# ── turns formatting ──────────────────────────────────────────────────────────
+
+def fmt_turns_table(turns_by_session):
+    all_turns = []
+    for session in sorted(turns_by_session.keys()):
+        for i, t in enumerate(turns_by_session[session]):
+            all_turns.append((session, i, t))
+    if not all_turns:
+        return "No per-turn data found."
+
+    multi_session = len(turns_by_session) > 1
+    headers = ["#", "turn_id", "time", "model", "init",
+               "input", "output", "fresh", "cache_rd", "cache_cr", "rsn",
+               "ctx_tok", "fill%", "ttfc_ms", "srv_ms", "tools"]
+    if multi_session:
+        headers = ["session"] + headers
+
+    rows = []
+    for session, i, t in all_turns:
+        fresh = t["input_tokens"] - t["cache_rd"] - t["cache_cr"]
+        lim = t.get("token_limit") or 0
+        fill = t["cur"] / lim if lim else 0
+        ttfc_str = f"{int(t['ttfc'] * 1000):,}" if t.get("ttfc") is not None else "-"
+        srv_str = f"{int(t['srv_ms']):,}" if t.get("srv_ms") is not None else "-"
+        tools_str = ",".join(t["tools"]) if t["tools"] else "-"
+        rsn_str = f"{t['reasoning']:,}" if t.get("reasoning") else "-"
+        row = [
+            i,
+            t.get("turn_id", "?"),
+            _fmt_dt(t["ts"]),
+            t["model"][:20],
+            t["initiator"][:5],
+            f"{t['input_tokens']:,}",
+            f"{t['output_tokens']:,}",
+            f"{fresh:,}",
+            f"{t['cache_rd']:,}",
+            f"{t['cache_cr']:,}",
+            rsn_str,
+            f"{t['cur']:,}",
+            _pct(fill),
+            ttfc_str,
+            srv_str,
+            tools_str,
+        ]
+        if multi_session:
+            row = [_short(session)] + row
+        rows.append(row)
+
+    out = ["Per-turn detail\n"]
+    out.append(_table(headers, rows))
+    return "\n".join(out)
+
+
+def fmt_turns_json(turns_by_session):
+    result = {}
+    for session, turns in turns_by_session.items():
+        result[session] = []
+        for i, t in enumerate(turns):
+            fresh = t["input_tokens"] - t["cache_rd"] - t["cache_cr"]
+            lim = t.get("token_limit") or 0
+            fill = t["cur"] / lim if lim else 0
+            result[session].append({
+                "turn_index": i,
+                "turn_id": t.get("turn_id"),
+                "time": _fmt_dt(t["ts"]),
+                "model": t["model"],
+                "initiator": t["initiator"],
+                "input_tokens": t["input_tokens"],
+                "output_tokens": t["output_tokens"],
+                "fresh_input_tokens": fresh,
+                "cache_read_tokens": t["cache_rd"],
+                "cache_creation_tokens": t["cache_cr"],
+                "reasoning_tokens": t["reasoning"],
+                "ctx_tokens": t["cur"],
+                "ctx_fill": round(fill, 4),
+                "ctx_delta": t["delta"],
+                "ttfc_ms": int(t["ttfc"] * 1000) if t.get("ttfc") is not None else None,
+                "server_duration_ms": int(t["srv_ms"]) if t.get("srv_ms") is not None else None,
+                "tools": t["tools"],
+            })
+    return result
+
+
 # ── tool latency data model ───────────────────────────────────────────────────
 
 _HEX_RE = __import__("re").compile(r"^[0-9a-f]{20,}$")
@@ -458,7 +566,7 @@ class ToolAgg:
 
 # ── tool latency parsing ──────────────────────────────────────────────────────
 
-def parse_tools(paths, since=None, until=None):
+def parse_tools(paths, since=None, until=None, session_filter=None):
     """Return {tool_name: ToolAgg} from execute_tool spans."""
 
     def in_window(ts_secs):
@@ -491,6 +599,11 @@ def parse_tools(paths, since=None, until=None):
                     continue
 
                 attrs = doc.get("attributes", {})
+                if session_filter:
+                    sess = attrs.get("gen_ai.conversation.id", "")
+                    if not sess.startswith(session_filter):
+                        continue
+
                 tool_name = attrs.get("gen_ai.tool.name", name[len("execute_tool "):])
                 mcp_hash = attrs.get("github.copilot.tool.parameters.mcp_server_name_hash")
                 mcp_tool = attrs.get("github.copilot.tool.parameters.mcp_tool_name")
@@ -561,7 +674,7 @@ def fmt_tools_json(tools):
 
 
 
-def analyze_context(paths, group_by, since=None, until=None):
+def analyze_context(paths, group_by, since=None, until=None, session_filter=None):
     groups = collections.defaultdict(ContextAgg)
 
     def in_window(ts_secs):
@@ -591,6 +704,9 @@ def analyze_context(paths, group_by, since=None, until=None):
 
                 attrs = doc.get("attributes", {})
                 session = attrs.get("gen_ai.conversation.id", "unknown")
+                if session_filter and not session.startswith(session_filter):
+                    continue
+
                 model = attrs.get("gen_ai.response.model") or attrs.get("gen_ai.request.model", "unknown")
                 span_ts = _secs(doc.get("startTime"))
 
@@ -695,10 +811,12 @@ def main():
     p = argparse.ArgumentParser(description="Copilot CLI session health reports from OTel signals.")
     p.add_argument("path", nargs="?", default=default_path,
                    help="OTel JSONL file (default: $COPILOT_OTEL_FILE_EXPORTER_PATH)")
-    p.add_argument("--report", choices=["context", "growth", "tools"], default="context",
+    p.add_argument("--report", choices=["context", "growth", "tools", "turns"], default="context",
                    help="report type (default: context)")
     p.add_argument("--by", choices=["session", "model", "all"], default="session",
                    help="grouping dimension (default: session)")
+    p.add_argument("--session", metavar="SESSION_ID",
+                   help="filter to a single session (prefix match, e.g. fe612bf2)")
     p.add_argument("--warn", type=float, default=70.0, metavar="PCT",
                    help="warning threshold %% for context fill (default: 70)")
     p.add_argument("--top", type=int, default=None, metavar="N",
@@ -721,8 +839,22 @@ def main():
 
     warn_threshold = args.warn / 100.0
 
+    if args.report == "turns":
+        turns_by_session = parse_turns(paths, since=args.since, until=args.until,
+                                       session_filter=args.session)
+        if not turns_by_session:
+            print("No per-turn data found in the log.")
+            sys.exit(0)
+        if args.json:
+            print(json.dumps(fmt_turns_json(turns_by_session), indent=2))
+        else:
+            print(fmt_turns_table(turns_by_session))
+            print(f"\n(source: chat spans  files: {len(paths)})")
+        return
+
     if args.report == "growth":
-        turns_by_session = parse_turns(paths, since=args.since, until=args.until)
+        turns_by_session = parse_turns(paths, since=args.since, until=args.until,
+                                       session_filter=args.session)
         if not turns_by_session:
             print("No context growth data found in the log.")
             sys.exit(0)
@@ -735,7 +867,8 @@ def main():
         return
 
     if args.report == "tools":
-        tools = parse_tools(paths, since=args.since, until=args.until)
+        tools = parse_tools(paths, since=args.since, until=args.until,
+                            session_filter=args.session)
         if not tools:
             print("No tool execution data found in the log.")
             sys.exit(0)
@@ -746,7 +879,8 @@ def main():
             print(f"\n(source: execute_tool spans  files: {len(paths)})")
         return
 
-    groups = analyze_context(paths, args.by, since=args.since, until=args.until)
+    groups = analyze_context(paths, args.by, since=args.since, until=args.until,
+                             session_filter=args.session)
 
     if not groups:
         print("No context window data found in the log.")
