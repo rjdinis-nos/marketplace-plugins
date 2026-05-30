@@ -434,6 +434,48 @@ def _dt(secs):
 def fmt_table(groups, group_by, pricing=None, top=None, show_time=False):
     show_cost = pricing is not None and pricing.any()
     cur = pricing.currency if pricing is not None else "$"
+
+    # Session view: compact layout — session, timestamps, calls, est_cost;
+    # sorted by first activity descending (most recent session on top).
+    if group_by == "session":
+        headers = ["session", "first (UTC)", "last (UTC)", "calls"]
+        if show_cost:
+            headers.append("est_cost")
+        ordered = sorted(groups, key=lambda k: -(groups[k].first_ts or 0))
+        tot = Agg()
+        for key in ordered:
+            tot.merge(groups[key])
+        if top is not None:
+            ordered = ordered[:top]
+        rows = []
+        for key in ordered:
+            g = groups[key]
+            row = [key, _dt(g.first_ts), _dt(g.last_ts), g.calls]
+            if show_cost:
+                row.append(_money(cur, g.est_cost))
+            rows.append(row)
+        total_row = ["TOTAL", _dt(tot.first_ts), _dt(tot.last_ts), tot.calls]
+        if show_cost:
+            total_row.append(_money(cur, tot.est_cost))
+        rows.append(total_row)
+        widths = [max(len(str(r[i])) for r in [headers] + rows) for i in range(len(headers))]
+        out = []
+        for r in [headers] + rows:
+            out.append("  ".join(str(c).ljust(widths[i]) for i, c in enumerate(r)))
+        out.insert(1, "  ".join("-" * w for w in widths))
+        table = "\n".join(out)
+        if show_cost:
+            table += f"\n\nCost estimate (per-model rates, {cur}/Mtok)."
+            if tot.est_cost is not None and tot.naive_cost is not None:
+                table += (
+                    f" Without cache discount: {_money(cur, tot.naive_cost)}"
+                    f"  |  saved by caching: {_money(cur, tot.naive_cost - tot.est_cost)}."
+                )
+            if tot.priced_calls < tot.calls:
+                table += f"\n{tot.calls - tot.priced_calls} of {tot.calls} calls had no matching rate (excluded from cost)."
+            table += "\n(estimate only — not billing-grade; verify rates against your plan)"
+        return table
+
     headers = [group_by, "calls", "input", "output", "reasoning", "cache_rd", "cache_cr", "total"]
     if show_cost:
         headers.append("est_cost")
