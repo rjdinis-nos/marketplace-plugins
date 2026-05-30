@@ -2,10 +2,10 @@
 """chart_context.py — ASCII time-series chart of context window fill % per session.
 
 Usage:
-  python3 chart_context.py
-  python3 chart_context.py ~/.copilot/logs/otel-signals.jsonl
+  python3 chart_context.py                          # sparkline (default)
+  python3 chart_context.py --style grid             # 2-D grid chart
   python3 chart_context.py --session fe612bf2
-  python3 chart_context.py --width 100 --height 25 --warn 60
+  python3 chart_context.py --width 100 --warn 60
   python3 chart_context.py --no-color
 
 Reads $COPILOT_OTEL_FILE_EXPORTER_PATH (or ~/.copilot/logs/otel-signals.jsonl).
@@ -124,6 +124,75 @@ def render(sessions, width, height, warn_pct, use_color):
     print("\n".join(lines))
 
 
+# ── sparkline renderer ────────────────────────────────────────────────────────
+
+BLOCKS = " ▁▂▃▄▅▆▇█"   # 9 levels: index = int(fill% / 100 * 8), clamped 0-8
+
+
+def fill_to_block(pct):
+    return BLOCKS[min(8, int(pct / 100 * 8))]
+
+
+def render_spark(sessions, spark_width, warn_pct, use_color):
+
+    def c(code):
+        return code if use_color else ""
+
+    lines = []
+    lines.append(c(BOLD) + "  Context window fill % — one row per session" + c(RESET))
+    lines.append(c(DIM) + f"  Each cell = one turn bucket  │  warn threshold: {int(warn_pct)}%  │  ⚠ = exceeded" + c(RESET))
+    lines.append("")
+
+    # header
+    lines.append(
+        f"  {'session':<10}  {'turns':>5}  {'start':>14} {'end':>14}  "
+        f"{'0%':<{spark_width // 2 - 2}}{'100%':>{spark_width // 2}}  "
+        f"{'max':>6}  {'ctx_limit':>9}"
+    )
+    lines.append("  " + "─" * (10 + 2 + 5 + 2 + 14 + 1 + 14 + 2 + spark_width + 2 + 6 + 2 + 9))
+
+    for sid, turns in sessions:
+        if not turns:
+            continue
+
+        max_fill = max(t["ctx_fill"] for t in turns) * 100
+        ctx_lim = turns[-1].get("ctx_tokens", 0)
+        fill_last = turns[-1]["ctx_fill"]
+        ctx_lim_tok = round(ctx_lim / fill_last) if fill_last else 0
+
+        # bucket turns into spark_width cells, take max fill in each bucket
+        n = len(turns)
+        buckets = [0.0] * spark_width
+        for i, t in enumerate(turns):
+            col = min(spark_width - 1, int(i / n * spark_width))
+            buckets[col] = max(buckets[col], t["ctx_fill"] * 100)
+
+        spark = ""
+        for pct in buckets:
+            blk = fill_to_block(pct)
+            if pct >= warn_pct:
+                spark += c(RED) + c(BOLD) + blk + c(RESET)
+            elif pct >= warn_pct * 0.75:
+                spark += c("\033[93m") + blk + c(RESET)   # yellow near threshold
+            else:
+                spark += blk
+
+        warn_flag = f"  {c(RED)}⚠{c(RESET)}" if max_fill >= warn_pct else "   "
+        t_start = turns[0]["time"][5:]   # MM-DD HH:MM
+        t_end   = turns[-1]["time"][5:]
+        lim_str = f"{ctx_lim_tok // 1000}k" if ctx_lim_tok else "?"
+
+        lines.append(
+            f"  {sid[:8]:<10}  {n:>5}  {t_start:>14} {t_end:>14}  "
+            f"{spark}  {max_fill:>5.1f}%{warn_flag}  {lim_str:>9}"
+        )
+
+    lines.append("")
+    lines.append(c(DIM) + "  Blocks: ▁=12% ▂=25% ▃=37% ▄=50% ▅=62% ▆=75% ▇=87% █=100%  "
+                 + c(RED) + "red = above warn" + c(DIM) + "  yellow = >75% of warn" + c(RESET))
+    print("\n".join(lines))
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -136,10 +205,12 @@ def main():
     p = argparse.ArgumentParser(description="ASCII time-series chart of context window fill %.")
     p.add_argument("path", nargs="?", default=default_path,
                    help="OTel JSONL file (default: $COPILOT_OTEL_FILE_EXPORTER_PATH)")
+    p.add_argument("--style", choices=["spark", "grid"], default="spark",
+                   help="chart style: spark = one row per session (default), grid = 2-D plot")
     p.add_argument("--session", metavar="SESSION_ID",
                    help="filter to one session (prefix match)")
-    p.add_argument("--width",  type=int, default=80,  help="chart width in chars (default: 80)")
-    p.add_argument("--height", type=int, default=20,  help="chart height in rows (default: 20)")
+    p.add_argument("--width",  type=int, default=60,  help="spark width / grid width in chars (default: 60)")
+    p.add_argument("--height", type=int, default=20,  help="grid height in rows (default: 20, grid only)")
     p.add_argument("--warn",   type=float, default=70.0, metavar="PCT",
                    help="warning threshold %% (default: 70)")
     p.add_argument("--no-color", action="store_true", help="disable ANSI colours")
@@ -167,7 +238,10 @@ def main():
 
     sessions = sorted(data.items(), key=lambda kv: kv[1][0]["time"] if kv[1] else "")
     use_color = not args.no_color and sys.stdout.isatty()
-    render(sessions, args.width, args.height, args.warn, use_color)
+    if args.style == "grid":
+        render(sessions, args.width, args.height, args.warn, use_color)
+    else:
+        render_spark(sessions, args.width, args.warn, use_color)
 
 
 if __name__ == "__main__":
