@@ -94,3 +94,29 @@ python3 "$SKILL_DIR/scripts/analyze_tokens.py" [PATH] [--by model|session|day|al
   cache_rd − cache_cr` is what gets the full input rate; `cache_write` (Anthropic
   only) defaults to the input rate when omitted.
 - Tests: `python3 "$SKILL_DIR/scripts/test_analyze_tokens.py"` (stdlib only).
+
+## analyze_sessions.py
+
+```
+python3 "$SKILL_DIR/scripts/analyze_sessions.py" --report context
+         [PATH] [--by session|model|all] [--warn PCT] [--top N]
+         [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--json] [--current-only]
+```
+(`$SKILL_DIR` is this skill's directory, i.e. the folder containing this file.)
+- `PATH` defaults to `$COPILOT_OTEL_FILE_EXPORTER_PATH`, then `~/.copilot/logs/otel-signals.jsonl`.
+- By default also reads rotated/compressed siblings; use `--current-only` to read just the active file.
+- `--report context` — context window fill analysis. Reads `github.copilot.session.usage_info`
+  events inside `chat` spans; computes `current_tokens / token_limit` per turn.
+- Output columns:
+  - **group** — session UUID (truncated), model name, or `all` depending on `--by`
+  - **turns** — number of LLM round-trips with context usage data
+  - **median_fill** — median context fill % across turns
+  - **p95_fill** — 95th-percentile fill %
+  - **max_fill** — peak fill % (most at-risk turn)
+  - **turns_>70%** — number of turns that exceeded the warn threshold
+  - **ctx_limit** — context window token limit (from telemetry)
+- Sorted by `max_fill` descending (most at-risk first).
+- `--warn PCT` — warn threshold in % for the `turns_>70%` column (default 70).
+- `--json` emits a JSON array; keys mirror the column names (snake_case).
+- When max_fill is high, the model silently drops oldest turns, causing repeated
+  work and extra token spend. Recommend starting a new session around 70% fill.

@@ -11,12 +11,12 @@
   },
   "plugins": [
     {
-      "name": "token-usage",
-      "description": "Enable OpenTelemetry token capture in the GitHub Copilot CLI and report token consumption (input/output/cache/reasoning) per model, session, or day. Bundles the token-usage agent and skill.",
+      "name": "copilot-insights",
+      "description": "Copilot CLI observability: token usage, cost estimates, and session health (context window pressure) via built-in OpenTelemetry. Bundles the copilot-insights agent, skill, and analyzer scripts.",
       "source": {
         "source": "github",
         "repo": "rjdinis-nos/marketplace-plugins",
-        "path": "plugins/token-usage"
+        "path": "plugins/copilot-insights"
       },
       "author": {
         "name": "Ricardo Dinis",
@@ -33,7 +33,9 @@
         "tokens",
         "usage",
         "cost",
-        "observability"
+        "observability",
+        "session-health",
+        "context-window"
       ]
     }
   ]
