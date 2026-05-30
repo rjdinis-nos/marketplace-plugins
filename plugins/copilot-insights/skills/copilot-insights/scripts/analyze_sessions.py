@@ -4,6 +4,7 @@
 Usage:
   python3 analyze_sessions.py                        # context report by session (default)
   python3 analyze_sessions.py --report context
+  python3 analyze_sessions.py --report growth        # context growth drivers
   python3 analyze_sessions.py --by model
   python3 analyze_sessions.py --by all
   python3 analyze_sessions.py --warn 60              # warn at 60% fill instead of 70%
@@ -122,7 +123,269 @@ class ContextAgg:
         return sum(1 for _, _, r in self.fills if r > threshold)
 
 
-# ── parsing ───────────────────────────────────────────────────────────────────
+# ── growth data model ─────────────────────────────────────────────────────────
+
+class GrowthAgg:
+    """Aggregates per-turn context delta data for one group (session/model/all)."""
+
+    def __init__(self):
+        self.deltas = []
+        self.tool_deltas = collections.defaultdict(list)
+        self.init_deltas = collections.defaultdict(list)
+        self.spikes = []   # (delta, initiator, model, cur, tools_str, session)
+        self.first_ts = None
+        self.last_ts = None
+
+    def _observe_time(self, secs):
+        if secs is None:
+            return
+        if self.first_ts is None or secs < self.first_ts:
+            self.first_ts = secs
+        if self.last_ts is None or secs > self.last_ts:
+            self.last_ts = secs
+
+    def add_turn(self, delta, initiator, model, cur, tools, ts_secs, session=""):
+        self.deltas.append(delta)
+        self.init_deltas[initiator].append(delta)
+        for tool in (tools or ["(no tool)"]):
+            self.tool_deltas[tool].append(delta)
+        self.spikes.append((delta, initiator, model, cur, tools, session))
+        self._observe_time(ts_secs)
+
+    def merge(self, other):
+        self.deltas.extend(other.deltas)
+        for k, v in other.tool_deltas.items():
+            self.tool_deltas[k].extend(v)
+        for k, v in other.init_deltas.items():
+            self.init_deltas[k].extend(v)
+        self.spikes.extend(other.spikes)
+        self._observe_time(other.first_ts)
+        self._observe_time(other.last_ts)
+
+    @property
+    def turns(self):
+        return len(self.deltas)
+
+    @property
+    def avg_delta(self):
+        return int(sum(self.deltas) / len(self.deltas)) if self.deltas else 0
+
+    @property
+    def max_delta(self):
+        return max(self.deltas) if self.deltas else 0
+
+    @property
+    def total_added(self):
+        return sum(d for d in self.deltas if d > 0)
+
+
+# ── growth parsing ────────────────────────────────────────────────────────────
+
+def parse_turns(paths, since=None, until=None):
+    """Return {session_id: [turn_dict sorted by start_ns]} from all chat spans."""
+
+    def in_window(ts_secs):
+        if since is None and until is None:
+            return True
+        d = _day(ts_secs)
+        if d == "unknown":
+            return False
+        if since and d < since:
+            return False
+        if until and d > until:
+            return False
+        return True
+
+    raw = collections.defaultdict(list)
+    for path in paths:
+        with _open_text(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    doc = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if doc.get("type") != "span" or not doc.get("name", "").startswith("chat "):
+                    continue
+
+                attrs = doc.get("attributes", {})
+                session = attrs.get("gen_ai.conversation.id", "unknown")
+                model = attrs.get("gen_ai.response.model") or attrs.get("gen_ai.request.model", "?")
+                initiator = attrs.get("github.copilot.initiator", "?")
+                span_ts = _secs(doc.get("startTime"))
+
+                if not in_window(span_ts):
+                    continue
+
+                events = doc.get("events", [])
+                usage = next(
+                    (e for e in events if e.get("name") == "github.copilot.session.usage_info"),
+                    None,
+                )
+                if not usage:
+                    continue
+
+                cur = int(usage["attributes"].get("github.copilot.current_tokens", 0))
+
+                # tools called this turn: deduplicated from postToolUse hooks
+                seen_tools, tools = set(), []
+                for e in events:
+                    if e.get("attributes", {}).get("github.copilot.hook.type") == "postToolUse":
+                        raw_tools = e.get("attributes", {}).get("github.copilot.hook.tool_names", "[]")
+                        try:
+                            for t in json.loads(raw_tools):
+                                if t not in seen_tools:
+                                    seen_tools.add(t)
+                                    tools.append(t)
+                        except Exception:
+                            pass
+
+                raw[session].append({
+                    "start_ns": doc.get("startTime", [0, 0]),
+                    "cur": cur,
+                    "initiator": initiator,
+                    "tools": tools,
+                    "model": model,
+                    "ts": span_ts,
+                    "session": session,
+                })
+
+    result = {}
+    for session, turns in raw.items():
+        turns.sort(key=lambda t: t["start_ns"] if isinstance(t["start_ns"], (int, float))
+                   else (t["start_ns"][0] if isinstance(t["start_ns"], list) else 0))
+        for i, t in enumerate(turns):
+            t["delta"] = t["cur"] - (turns[i - 1]["cur"] if i > 0 else 0)
+        result[session] = turns
+    return result
+
+
+def analyze_growth(turns_by_session, group_by):
+    """Return {group_key: GrowthAgg}."""
+    groups = collections.defaultdict(GrowthAgg)
+    for session, turns in turns_by_session.items():
+        for t in turns:
+            if group_by == "session":
+                key = session
+            elif group_by == "model":
+                key = t["model"]
+            else:
+                key = "all"
+            groups[key].add_turn(
+                delta=t["delta"],
+                initiator=t["initiator"],
+                model=t["model"],
+                cur=t["cur"],
+                tools=t["tools"],
+                ts_secs=t["ts"],
+                session=session,
+            )
+    return groups
+
+
+# ── growth formatting ─────────────────────────────────────────────────────────
+
+def _short(session_id, length=8):
+    return session_id[:length] if len(session_id) > length else session_id
+
+
+def _fmt_num(n):
+    return f"{n:+,}" if n else "0"
+
+
+def _table(headers, rows):
+    widths = [max(len(str(r[i])) for r in [headers] + rows) for i in range(len(headers))]
+    lines = []
+    lines.append("  ".join(str(c).ljust(widths[i]) for i, c in enumerate(headers)))
+    lines.append("  ".join("-" * w for w in widths))
+    for r in rows:
+        lines.append("  ".join(str(c).ljust(widths[i]) for i, c in enumerate(r)))
+    return "\n".join(lines)
+
+
+def fmt_growth_table(groups, group_by, top_spikes=10, top=None):
+    if not groups:
+        return "No context growth data found."
+
+    # ── 1. Summary table per group ────────────────────────────────────────────
+    ordered = sorted(groups, key=lambda k: -groups[k].max_delta)
+    tot = GrowthAgg()
+    for key in ordered:
+        tot.merge(groups[key])
+    if top is not None:
+        ordered = ordered[:top]
+
+    summary_rows = []
+    for key in ordered:
+        g = groups[key]
+        label = _short(key) if group_by == "session" else key
+        summary_rows.append([label, g.turns, _fmt_num(g.avg_delta),
+                              _fmt_num(g.max_delta), f"{g.total_added:,}"])
+    summary_rows.append(["TOTAL", tot.turns, _fmt_num(tot.avg_delta),
+                          _fmt_num(tot.max_delta), f"{tot.total_added:,}"])
+
+    out = [f"Context growth report — by {group_by}\n"]
+    out.append(_table([group_by, "turns", "avg_delta", "max_delta", "total_added"], summary_rows))
+
+    # ── 2. Top spikes ─────────────────────────────────────────────────────────
+    all_spikes = sorted(tot.spikes, key=lambda s: -s[0])[:top_spikes]
+    if all_spikes:
+        out.append(f"\n── Top {len(all_spikes)} context spikes ──")
+        spike_rows = []
+        for delta, initiator, model, cur, tools, session in all_spikes:
+            tools_str = ",".join(tools) if tools else "-"
+            sess_label = (_short(session) + "  ") if group_by != "session" else ""
+            spike_rows.append([
+                f"{sess_label}{initiator}",
+                model[:22],
+                f"{cur:,}",
+                _fmt_num(delta),
+                tools_str,
+            ])
+        out.append(_table(["initiator", "model", "cur_tok", "delta", "tools"], spike_rows))
+
+    # ── 3. By initiator ───────────────────────────────────────────────────────
+    out.append("\n── By initiator ──")
+    init_rows = []
+    for k, vals in sorted(tot.init_deltas.items()):
+        avg = int(sum(vals) / len(vals))
+        init_rows.append([k, _fmt_num(avg), _fmt_num(max(vals)), len(vals)])
+    out.append(_table(["initiator", "avg_delta", "max_delta", "turns"], init_rows))
+
+    # ── 4. By tool ────────────────────────────────────────────────────────────
+    out.append("\n── By tool ──")
+    tool_rows = []
+    for k, vals in sorted(tot.tool_deltas.items(), key=lambda x: -(sum(x[1]) / len(x[1]))):
+        avg = int(sum(vals) / len(vals))
+        tool_rows.append([k[:22], _fmt_num(avg), _fmt_num(max(vals)), len(vals)])
+    out.append(_table(["tool", "avg_delta", "max_delta", "turns"], tool_rows))
+
+    return "\n".join(out)
+
+
+def fmt_growth_json(groups):
+    result = {}
+    for key, g in groups.items():
+        result[key] = {
+            "turns": g.turns,
+            "avg_delta": g.avg_delta,
+            "max_delta": g.max_delta,
+            "total_added": g.total_added,
+            "by_initiator": {
+                k: {"avg_delta": int(sum(v)/len(v)), "max_delta": max(v), "turns": len(v)}
+                for k, v in g.init_deltas.items()
+            },
+            "by_tool": {
+                k: {"avg_delta": int(sum(v)/len(v)), "max_delta": max(v), "turns": len(v)}
+                for k, v in g.tool_deltas.items()
+            },
+        }
+    return result
+
+
+
 
 def analyze_context(paths, group_by, since=None, until=None):
     groups = collections.defaultdict(ContextAgg)
@@ -258,7 +521,7 @@ def main():
     p = argparse.ArgumentParser(description="Copilot CLI session health reports from OTel signals.")
     p.add_argument("path", nargs="?", default=default_path,
                    help="OTel JSONL file (default: $COPILOT_OTEL_FILE_EXPORTER_PATH)")
-    p.add_argument("--report", choices=["context"], default="context",
+    p.add_argument("--report", choices=["context", "growth"], default="context",
                    help="report type (default: context)")
     p.add_argument("--by", choices=["session", "model", "all"], default="session",
                    help="grouping dimension (default: session)")
@@ -283,6 +546,20 @@ def main():
         )
 
     warn_threshold = args.warn / 100.0
+
+    if args.report == "growth":
+        turns_by_session = parse_turns(paths, since=args.since, until=args.until)
+        if not turns_by_session:
+            print("No context growth data found in the log.")
+            sys.exit(0)
+        groups = analyze_growth(turns_by_session, args.by)
+        if args.json:
+            print(json.dumps(fmt_growth_json(groups), indent=2))
+        else:
+            print(fmt_growth_table(groups, args.by, top_spikes=10, top=args.top))
+            print(f"\n(source: chat span tool hooks  files: {len(paths)})")
+        return
+
     groups = analyze_context(paths, args.by, since=args.since, until=args.until)
 
     if not groups:
