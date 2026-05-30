@@ -24,8 +24,8 @@ Here's what I can report:
 - 📊 **Token usage** — calls, input/output/cache/reasoning tokens, grouped by model, session, or day
 - 💰 **Cost estimates** — per-model pricing using the bundled rates snapshot
 - 🪟 **Context window pressure** — fill % per session/model, spot sessions near the limit
-- 🔄 **Log rotation** — automatic size-gated rotation, or on-demand
 - 🛠️ **Tool latency** — per-tool call times and error rates, with MCP vs builtin classification
+- 🔄 **Log rotation** — automatic size-gated rotation, or on-demand
 
 If OTel is already active, confirm it with the log path and size. Otherwise show a brief note and the one-time setup command:
 
