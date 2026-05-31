@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Regression tests for analyze_tokens.py.
 
-Run: python3 plugins/token-usage/skills/token-usage/scripts/test_analyze_tokens.py
+Run: python3 plugins/copilot-insights/skills/copilot-insights/scripts/test_analyze_tokens.py
 No third-party deps; uses only the stdlib unittest.
 """
 import os

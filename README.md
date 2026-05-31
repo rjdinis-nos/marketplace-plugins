@@ -13,19 +13,20 @@ The marketplace manifest lives in [`.claude-plugin/marketplace.json`](.claude-pl
 Then browse and install plugins:
 
 ```bash
-/plugin install token-usage@rjdinis-nos
+/plugin install copilot-insights@rjdinis-nos
 ```
 
 ## Plugins
 
-### token-usage
+### copilot-insights
 
 Enable OpenTelemetry token capture in the GitHub Copilot CLI and report token
-consumption (input / output / cache / reasoning) per model, session, or day.
-Bundles an agent, a skill, and an analyzer script. Token signals follow the OTel
-GenAI Semantic Conventions, so the numbers are billing-grade, not estimates.
+consumption (input / output / cache / reasoning) per model, session, or day,
+plus session health (context window pressure, latency). Bundles an agent, a
+skill, and analyzer scripts. Token signals follow the OTel GenAI Semantic
+Conventions, so the numbers are billing-grade, not estimates.
 
-See [`plugins/token-usage`](plugins/token-usage) for details.
+See [`plugins/copilot-insights`](plugins/copilot-insights) for details.
 
 ## Repository layout
 
@@ -33,7 +34,7 @@ See [`plugins/token-usage`](plugins/token-usage) for details.
 .claude-plugin/
   marketplace.json        # marketplace manifest
 plugins/
-  token-usage/
+  copilot-insights/
     .claude-plugin/
       plugin.json         # plugin manifest
     agents/               # bundled agent
