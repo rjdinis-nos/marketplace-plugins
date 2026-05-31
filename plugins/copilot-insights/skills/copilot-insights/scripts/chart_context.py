@@ -156,9 +156,9 @@ def render_spark(sessions, spark_width, warn_pct, use_color):
             continue
 
         max_fill = max(t["ctx_fill"] for t in turns) * 100
-        ctx_lim = turns[-1].get("ctx_tokens", 0)
+        cur_tokens = turns[-1].get("ctx_tokens", 0)
         fill_last = turns[-1]["ctx_fill"]
-        ctx_lim_tok = round(ctx_lim / fill_last) if fill_last else 0
+        ctx_lim_tok = round(cur_tokens / fill_last) if fill_last else 0
 
         # bucket turns into spark_width cells, take max fill in each bucket
         n = len(turns)

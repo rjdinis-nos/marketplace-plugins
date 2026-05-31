@@ -323,7 +323,7 @@ def walk(node, on_span, on_metric):
         if "attributes" in node and ("startTimeUnixNano" in node or "spanId" in node or "name" in node):
             on_span(node)
         # A metric object.
-        if node.get("name") == TOKEN_METRIC or ("sum" in node and node.get("name") == TOKEN_METRIC):
+        if node.get("name") == TOKEN_METRIC:
             on_metric(node)
         for v in node.values():
             walk(v, on_span, on_metric)

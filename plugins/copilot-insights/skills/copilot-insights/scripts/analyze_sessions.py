@@ -26,12 +26,21 @@ import glob
 import gzip
 import json
 import os
+import re
 import statistics
 import sys
 from datetime import datetime, timezone
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+
+def _int0(value):
+    """Coerce an OTel attribute to int, defaulting to 0 on None/non-numeric."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
 
 def _secs(ts):
     """Convert OTel [sec, nano] timestamp pair to float seconds."""
@@ -227,11 +236,11 @@ def parse_turns(paths, since=None, until=None, session_filter=None):
                     continue
 
                 # token usage fields from span attributes
-                input_tokens = int(attrs.get("gen_ai.usage.input_tokens", 0))
-                output_tokens = int(attrs.get("gen_ai.usage.output_tokens", 0))
-                cache_rd = int(attrs.get("gen_ai.usage.cache_read.input_tokens", 0))
-                cache_cr = int(attrs.get("gen_ai.usage.cache_creation.input_tokens", 0))
-                reasoning = int(attrs.get("gen_ai.usage.reasoning.output_tokens", 0))
+                input_tokens = _int0(attrs.get("gen_ai.usage.input_tokens", 0))
+                output_tokens = _int0(attrs.get("gen_ai.usage.output_tokens", 0))
+                cache_rd = _int0(attrs.get("gen_ai.usage.cache_read.input_tokens", 0))
+                cache_cr = _int0(attrs.get("gen_ai.usage.cache_creation.input_tokens", 0))
+                reasoning = _int0(attrs.get("gen_ai.usage.reasoning.output_tokens", 0))
                 ttfc = attrs.get("gen_ai.response.time_to_first_chunk")
                 srv_ms = attrs.get("github.copilot.server_duration")
                 turn_id = attrs.get("github.copilot.turn_id")
@@ -244,8 +253,8 @@ def parse_turns(paths, since=None, until=None, session_filter=None):
                 if not usage:
                     continue
 
-                cur = int(usage["attributes"].get("github.copilot.current_tokens", 0))
-                token_limit = int(usage["attributes"].get("github.copilot.token_limit", 0))
+                cur = _int0(usage["attributes"].get("github.copilot.current_tokens", 0))
+                token_limit = _int0(usage["attributes"].get("github.copilot.token_limit", 0))
 
                 # tools called this turn: deduplicated from postToolUse hooks
                 seen_tools, tools = set(), []
@@ -257,7 +266,7 @@ def parse_turns(paths, since=None, until=None, session_filter=None):
                                 if t not in seen_tools:
                                     seen_tools.add(t)
                                     tools.append(t)
-                        except Exception:
+                        except (json.JSONDecodeError, TypeError):
                             pass
 
                 raw[session].append({
@@ -500,8 +509,7 @@ def fmt_turns_json(turns_by_session):
 
 # ── tool latency data model ───────────────────────────────────────────────────
 
-_HEX_RE = __import__("re").compile(r"^[0-9a-f]{20,}$")
-_MCP_TOOL_RE = __import__("re").compile(r"^([0-9a-f]{20,})/(.+)$")
+_MCP_TOOL_RE = re.compile(r"^([0-9a-f]{20,})/(.+)$")
 
 
 def _is_mcp_hash(name):
@@ -723,8 +731,8 @@ def analyze_context(paths, group_by, since=None, until=None, session_filter=None
                     lim = ea.get("github.copilot.token_limit")
                     cur = ea.get("github.copilot.current_tokens")
                     ev_ts = _secs(ev.get("time")) or span_ts
-                    if lim and cur:
-                        groups[key].add(int(cur), int(lim), ev_ts)
+                    if lim is not None and cur is not None and _int0(lim) > 0:
+                        groups[key].add(_int0(cur), _int0(lim), ev_ts)
 
     return groups
 

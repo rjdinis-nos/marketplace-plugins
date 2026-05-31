@@ -37,6 +37,12 @@ gzip -c "$LOG" > "$dest"
 echo "rotated $LOG -> $dest"
 
 # Prune oldest, keeping the newest $KEEP compressed generations.
-ls -1t "$LOG".*.gz 2>/dev/null | tail -n +"$((KEEP + 1))" | while IFS= read -r old; do
-  rm -f "$old"
-done
+# Rotated files carry a date +%Y%m%d-%H%M%S suffix, so reverse lexicographic
+# order (newest first) matches chronological order without parsing `ls`.
+find "$(dirname "$LOG")" -maxdepth 1 -name "$(basename "$LOG").*.gz" -print0 2>/dev/null \
+  | sort -z -r \
+  | tr '\0' '\n' \
+  | tail -n +"$((KEEP + 1))" \
+  | while IFS= read -r old; do
+      rm -f "$old"
+    done
