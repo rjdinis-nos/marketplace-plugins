@@ -521,6 +521,52 @@ def fmt_table(groups, group_by, pricing=None, top=None, show_time=False):
     return table
 
 
+def to_json_result(groups, span_found, pricing, show_time, m_in, m_out):
+    """Build the JSON serializable dict emitted by --json."""
+    show_cost = pricing is not None and pricing.any()
+    result = {
+        "source": "spans" if span_found else "metrics",
+        "groups": {
+            k: {
+                "calls": g.calls,
+                "input_tokens": g.input,
+                "output_tokens": g.output,
+                "reasoning_output_tokens": g.reasoning,
+                "cache_read_input_tokens": g.cache_read,
+                "cache_creation_input_tokens": g.cache_creation,
+                "fresh_input_tokens": g.fresh_input,
+                "total_tokens": g.total,
+                **(
+                    {
+                        "first_ts": _iso(g.first_ts),
+                        "last_ts": _iso(g.last_ts),
+                    }
+                    if show_time
+                    else {}
+                ),
+                **(
+                    {
+                        "est_cost": round(g.est_cost, 6) if g.est_cost is not None else None,
+                        "priced_calls": g.priced_calls,
+                    }
+                    if show_cost
+                    else {}
+                ),
+            }
+            for k, g in groups.items()
+        },
+        "metric_token_usage": {"input": m_in, "output": m_out, "total": m_in + m_out},
+    }
+    if show_cost:
+        result["pricing"] = {
+            "currency": pricing.currency,
+            "per_model": pricing.per_model(),
+            "models_priced": sorted(pricing.models) if pricing.per_model() else None,
+        }
+        result["cost_disclaimer"] = "estimate only — not billing-grade"
+    return result
+
+
 def main():
     default_path = os.environ.get("COPILOT_OTEL_FILE_EXPORTER_PATH") or os.path.expanduser(
         "~/.copilot/logs/otel-signals.jsonl"
@@ -563,47 +609,7 @@ def main():
     groups, span_found, m_in, m_out = analyze(paths, args.by, since=args.since, until=args.until, pricing=pricing)
 
     if args.json:
-        show_cost = pricing.any()
-        result = {
-            "source": "spans" if span_found else "metrics",
-            "groups": {
-                k: {
-                    "calls": g.calls,
-                    "input_tokens": g.input,
-                    "output_tokens": g.output,
-                    "reasoning_output_tokens": g.reasoning,
-                    "cache_read_input_tokens": g.cache_read,
-                    "cache_creation_input_tokens": g.cache_creation,
-                    "fresh_input_tokens": g.fresh_input,
-                    "total_tokens": g.total,
-                    **(
-                        {
-                            "first_ts": _iso(g.first_ts),
-                            "last_ts": _iso(g.last_ts),
-                        }
-                        if args.show_time
-                        else {}
-                    ),
-                    **(
-                        {
-                            "est_cost": round(g.est_cost, 6) if g.est_cost is not None else None,
-                            "priced_calls": g.priced_calls,
-                        }
-                        if show_cost
-                        else {}
-                    ),
-                }
-                for k, g in groups.items()
-            },
-            "metric_token_usage": {"input": m_in, "output": m_out, "total": m_in + m_out},
-        }
-        if show_cost:
-            result["pricing"] = {
-                "currency": pricing.currency,
-                "per_model": pricing.per_model(),
-                "models_priced": sorted(pricing.models) if pricing.per_model() else None,
-            }
-            result["cost_disclaimer"] = "estimate only — not billing-grade"
+        result = to_json_result(groups, span_found, pricing, args.show_time, m_in, m_out)
         print(json.dumps(result, indent=2))
         return
 
