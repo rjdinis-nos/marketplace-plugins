@@ -1107,6 +1107,15 @@ def fmt_breakdown_table(breakdown_by_session, top=None):
         "conversation_history": "Conversation history",
     }
 
+    def _skill_blended(bd):
+        """True when skill_content is the same cache_cr event as sys_instructions (turn-0 overlap)."""
+        return (
+            bd.get("skill_first_write")
+            and bd["components"]["skill_content"]["tokens"] > 0
+            and bd["components"]["skill_content"]["tokens"]
+            == bd["components"]["sys_instructions"]["tokens"]
+        )
+
     ordered = sorted(breakdown_by_session, key=lambda k: -(breakdown_by_session[k]["latest_ctx_tokens"]))
     if top is not None:
         ordered = ordered[:top]
@@ -1127,12 +1136,18 @@ def fmt_breakdown_table(breakdown_by_session, top=None):
         out.append(header)
         out.append(f"Context: {ctx:,} / {limit_str} tokens  ({fill_str} fill)\n")
 
+        blended = _skill_blended(bd)
+        sys_label = "System + instructions (incl. skills)" if blended else LABELS["sys_instructions"]
+
         rows = []
         total_shown = 0
         for key in COMPONENT_ORDER:
             comp = bd["components"][key]
+            if key == "skill_content" and blended:
+                # Same cache_cr event as sys_instructions — skip to avoid double-counting
+                continue
             if key == "tool_definitions":
-                # Tokens are folded into sys_instructions (cache_rd); show count only
+                # Tokens are folded into sys_instructions; show count only
                 rows.append([
                     LABELS[key],
                     f"{'─':>7}",
@@ -1141,10 +1156,11 @@ def fmt_breakdown_table(breakdown_by_session, top=None):
                     comp["source"],
                 ])
             else:
+                label = sys_label if key == "sys_instructions" else LABELS[key]
                 bar_width = int(comp["pct"] * 30)
                 bar = "█" * bar_width + "░" * (30 - bar_width)
                 rows.append([
-                    LABELS[key],
+                    label,
                     f"{comp['tokens']:>7,}",
                     f"{comp['pct']:.1%}",
                     bar,
@@ -1162,15 +1178,13 @@ def fmt_breakdown_table(breakdown_by_session, top=None):
         for r in rows:
             out.append("  ".join(str(c).ljust(widths[i]) for i, c in enumerate(r)))
 
-        if bd["skill_turns"] == 0:
-            if bd.get("skill_first_write"):
-                out.append(
-                    "\n  ⚠️  System prompt was written to cache on turn 0 (first-session write)."
-                    "\n      Skills loaded at startup are blended into 'System + instructions'"
-                    "\n      and cannot be separated without message-content capture."
-                )
-            else:
-                out.append("\n  ℹ️  No skill tool detected — skill_content will be 0.")
+        if blended:
+            out.append(
+                "\n  ℹ️  Turn 0 had no prior cache — system prompt and skills were written together"
+                "\n      (cache_cr). They cannot be separated without message-content capture."
+            )
+        elif bd["skill_turns"] == 0:
+            out.append("\n  ℹ️  No skill tool detected — skill_content will be 0.")
         out.append(
             "\n  All token values are exact OTel measurements."
             "\n  Tool definition tokens are folded into System + instructions (cache_rd at turn 0)."
