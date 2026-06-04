@@ -409,7 +409,7 @@ def fmt_growth_json(groups, turn_filter=None):
     result = {}
     for key, g in groups.items():
         by_turn = []
-        for i, (delta, initiator, model, cur, tools, session) in enumerate(g.spikes, start=1):
+        for i, (delta, initiator, model, cur, tools, session) in enumerate(g.spikes):
             by_turn.append({
                 "turn": i,
                 "delta_tokens": delta,

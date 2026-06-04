@@ -234,6 +234,32 @@ class GrowthFormatTests(unittest.TestCase):
         self.assertIn("by_initiator", result["all"])
         self.assertIn("by_tool", result["all"])
 
+    def test_fmt_growth_json_with_turn_filter(self):
+        g = ses.GrowthAgg()
+        g.add_turn(10, "user", "m1", 100, ["view"], 1.0, "s1")
+        g.add_turn(20, "agent", "m1", 120, ["bash"], 2.0, "s1")
+        g.add_turn(5, "user", "m1", 125, ["edit"], 3.0, "s1")
+        
+        # Without filter
+        result = ses.fmt_growth_json({"all": g})
+        self.assertEqual(len(result["all"]["by_turn"]), 3)
+        
+        # Filter to turn 0 (first turn, starts at 1 in enum)
+        result = ses.fmt_growth_json({"all": g}, turn_filter=0)
+        self.assertEqual(len(result["all"]["by_turn"]), 1)
+        self.assertEqual(result["all"]["by_turn"][0]["turn"], 0)
+        self.assertEqual(result["all"]["by_turn"][0]["delta_tokens"], 10)
+        
+        # Filter to turn 1 (second turn)
+        result = ses.fmt_growth_json({"all": g}, turn_filter=1)
+        self.assertEqual(len(result["all"]["by_turn"]), 1)
+        self.assertEqual(result["all"]["by_turn"][0]["turn"], 1)
+        self.assertEqual(result["all"]["by_turn"][0]["delta_tokens"], 20)
+        
+        # Filter to non-existent turn
+        result = ses.fmt_growth_json({"all": g}, turn_filter=10)
+        self.assertEqual(len(result["all"]["by_turn"]), 0)
+
     def test_fmt_growth_table_basic(self):
         g = ses.GrowthAgg()
         g.add_turn(100, "user", "m1", 200, ["view"], 1.0, "s1")
@@ -272,6 +298,43 @@ class TurnsFormatTests(unittest.TestCase):
         self.assertEqual(t["ctx_tokens"], 150)
         self.assertEqual(t["fresh_input_tokens"], 70)  # 100 - 20 - 10
         self.assertEqual(t["ctx_fill"], 0.15)
+
+    def test_fmt_turns_json_with_turn_filter(self):
+        turns = {
+            "sess-1": [
+                {
+                    "input_tokens": 100, "output_tokens": 50,
+                    "cache_rd": 0, "cache_cr": 0, "reasoning": 5,
+                    "cur": 150, "token_limit": 1000, "delta": 150,
+                    "model": "gpt-4", "initiator": "user",
+                    "ts": 1780087173.0, "tools": ["view"],
+                    "ttfc": None, "srv_ms": None, "turn_id": "0",
+                },
+                {
+                    "input_tokens": 100, "output_tokens": 50,
+                    "cache_rd": 0, "cache_cr": 0, "reasoning": 5,
+                    "cur": 200, "token_limit": 1000, "delta": 50,
+                    "model": "gpt-4", "initiator": "agent",
+                    "ts": 1780087174.0, "tools": ["bash"],
+                    "ttfc": None, "srv_ms": None, "turn_id": "1",
+                },
+            ]
+        }
+        # Filter to turn 1 (second turn)
+        result = ses.fmt_turns_json(turns, turn_filter=1)
+        self.assertEqual(len(result["sess-1"]), 1)
+        self.assertEqual(result["sess-1"][0]["turn_index"], 1)
+        self.assertEqual(result["sess-1"][0]["ctx_delta"], 50)
+        
+        # Filter to turn 0 (first turn)
+        result = ses.fmt_turns_json(turns, turn_filter=0)
+        self.assertEqual(len(result["sess-1"]), 1)
+        self.assertEqual(result["sess-1"][0]["turn_index"], 0)
+        self.assertEqual(result["sess-1"][0]["ctx_delta"], 150)
+        
+        # Filter to non-existent turn
+        result = ses.fmt_turns_json(turns, turn_filter=5)
+        self.assertEqual(len(result["sess-1"]), 0)
 
     def test_fmt_turns_table(self):
         turns = {

@@ -143,7 +143,7 @@ Analyzes per-turn context delta and identifies what fills the context window.
 
 - `--json` output includes all table columns plus:
   - **by_turn** — per-turn details array:
-    - `turn` — turn number (1-indexed)
+    - `turn` — turn number (0-indexed, so 0 = first turn)
     - `delta_tokens` — context added this turn
     - `current_context_tokens` — total context size after this turn
     - `initiator` — `"user"` or `"agent"`
