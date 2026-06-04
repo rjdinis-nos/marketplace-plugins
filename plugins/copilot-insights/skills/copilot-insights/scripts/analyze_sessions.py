@@ -988,13 +988,18 @@ def _parse_tool_defs_by_session(paths, session_filter=None, session_ids=None):
 
 
 def _estimate_tool_defs(tool_defs_str):
-    """Return (token_est, tool_count) for a tool_definitions JSON string."""
-    token_est = len(tool_defs_str) // 4
+    """Return (tool_count,) for a tool_definitions JSON string.
+
+    The OTel attribute only exports {type, name} stubs — not full schemas —
+    so a character-based token estimate would be wildly inaccurate.
+    Tool definition tokens are captured inside the system-instructions cache
+    hit (cache_rd at turn 0) and are shown there instead.
+    """
     try:
         tool_count = len(json.loads(tool_defs_str))
     except (json.JSONDecodeError, TypeError):
         tool_count = 0
-    return token_est, tool_count
+    return tool_count
 
 
 def analyze_breakdown(turns_by_session, tool_defs_by_session):
@@ -1021,7 +1026,7 @@ def analyze_breakdown(turns_by_session, tool_defs_by_session):
 
         # ── tool definitions estimate ─────────────────────────────────────────
         tool_defs_str = tool_defs_by_session.get(session, "")
-        tool_defs_est, tool_count = _estimate_tool_defs(tool_defs_str)
+        tool_count = _estimate_tool_defs(tool_defs_str)
 
         # ── skill content: cache_cr on skill-tool turns ───────────────────────
         skill_turns = [t for t in turns if "skill" in t.get("tools", [])]
@@ -1073,10 +1078,11 @@ def analyze_breakdown(turns_by_session, tool_defs_by_session):
                     "estimated": False,
                 },
                 "tool_definitions": {
-                    "tokens": tool_defs_est,
-                    "pct": round(tool_defs_est / latest_ctx, 4) if latest_ctx else 0.0,
-                    "source": f"tool_defs JSON ÷ 4 ({tool_count} tools) ~estimated",
-                    "estimated": True,
+                    "tokens": 0,
+                    "tool_count": tool_count,
+                    "pct": 0.0,
+                    "source": f"{tool_count} tools — tokens included in System + instructions above",
+                    "estimated": False,
                 },
                 "conversation_history": {
                     "tokens": conv_tokens,
@@ -1097,7 +1103,7 @@ def fmt_breakdown_table(breakdown_by_session, top=None):
     LABELS = {
         "sys_instructions":   "System + instructions",
         "skill_content":      "Skills loaded",
-        "tool_definitions":   "Tool definitions ~est",
+        "tool_definitions":   "Tool definitions",
         "conversation_history": "Conversation history",
     }
 
@@ -1125,16 +1131,26 @@ def fmt_breakdown_table(breakdown_by_session, top=None):
         total_shown = 0
         for key in COMPONENT_ORDER:
             comp = bd["components"][key]
-            bar_width = int(comp["pct"] * 30)
-            bar = "█" * bar_width + "░" * (30 - bar_width)
-            rows.append([
-                LABELS[key],
-                f"{comp['tokens']:>7,}",
-                f"{comp['pct']:.1%}",
-                bar,
-                comp["source"],
-            ])
-            total_shown += comp["tokens"]
+            if key == "tool_definitions":
+                # Tokens are folded into sys_instructions (cache_rd); show count only
+                rows.append([
+                    LABELS[key],
+                    f"{'─':>7}",
+                    f"{'─':>5}",
+                    "─" * 30,
+                    comp["source"],
+                ])
+            else:
+                bar_width = int(comp["pct"] * 30)
+                bar = "█" * bar_width + "░" * (30 - bar_width)
+                rows.append([
+                    LABELS[key],
+                    f"{comp['tokens']:>7,}",
+                    f"{comp['pct']:.1%}",
+                    bar,
+                    comp["source"],
+                ])
+                total_shown += comp["tokens"]
 
         rows.append(["─" * 22, "─" * 7, "─" * 5, "─" * 30, ""])
         rows.append(["Components total", f"{total_shown:>7,}", "", "", ""])
@@ -1156,7 +1172,8 @@ def fmt_breakdown_table(breakdown_by_session, top=None):
             else:
                 out.append("\n  ℹ️  No skill tool detected — skill_content will be 0.")
         out.append(
-            "\n  ~est = character-based estimate (len ÷ 4); all other values are exact OTel measurements."
+            "\n  All token values are exact OTel measurements."
+            "\n  Tool definition tokens are folded into System + instructions (cache_rd at turn 0)."
         )
 
     return "\n".join(out)
