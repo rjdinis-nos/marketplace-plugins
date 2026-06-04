@@ -86,7 +86,7 @@ What would you like to start with?
 
 11. **Context chart** (if asked). Run `chart_context.py [--style spark|grid] [--last N] [--current-session]`. Renders an ASCII time-series chart of context fill % across turns. `spark` (default) = one sparkline row per session; `grid` = 2-D heatmap. Accepts the same session selectors as the other scripts.
 
-12. **Context breakdown** (if asked). Run `analyze_sessions.py --report breakdown [--current-session|--last N|--session ID]`. Shows inferred per-component composition of the context window without message content capture: **sys_instructions** (cache_rd at turn 0 — previously-cached system prompt), **skill_content** (cache_cr on skill-tool turns — skill payload injected this session), **tool_definitions** (~estimated from `gen_ai.tool.definitions` JSON length ÷ 4), **conversation_history** (ctx_delta sum for non-skill turns after turn 0). Renders tokens, % of context, and an ASCII fill bar. Use `--json` for machine output.
+12. **Context breakdown** (if asked). Run `analyze_sessions.py --report breakdown [--current-session|--last N|--session ID]`. Shows inferred per-component composition of the context window without message content capture: **sys_instructions** (cache_rd at turn 0 — previously-cached system prompt + tool definitions), **skill_content** (cache_cr on skill-tool turns — skill payload injected this session), **tool_definitions** (tool count only — token cost is folded into sys_instructions; the OTel attribute exports name+type stubs only, not full schemas), **conversation_history** (ctx_delta sum for non-skill turns after turn 0). Renders tokens, % of context, and an ASCII fill bar. Use `--json` for machine output.
 
 ## Next steps
 

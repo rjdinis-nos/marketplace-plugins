@@ -217,14 +217,15 @@ without requiring message content capture (`OTEL_INSTRUMENTATION_GENAI_CAPTURE_M
     (system prompt + agent instructions loaded from prior session cache). Exact measurement.
   - **Skills loaded** — sum of `cache_cr` for turns where the `skill` tool ran:
     newly cached content = skill payload injected this session. Exact measurement.
-  - **Tool definitions** — `len(gen_ai.tool.definitions JSON) ÷ 4`: character-based token estimate
-    for the tool schema sent with every request. Marked `~estimated`.
+  - **Tool definitions** — count of tools from `gen_ai.tool.definitions` (name+type stubs only;
+    full schema tokens are captured inside the system-instructions cache hit and folded into
+    **System + instructions** above). No separate token estimate.
   - **Conversation history** — sum of `ctx_delta` for non-skill turns after turn 0:
     organic growth from user messages, model replies, and tool outputs. Exact measurement.
 
 - Output columns: **Component**, **Tokens**, **%**, fill bar (30 cols), **Source**
-- Footer row shows `Components total` (may differ slightly from `ctx_tokens` due to estimation).
-- `~est` suffix indicates character-based estimates; all other values are exact OTel measurements.
+- Footer row shows `Components total` (may differ slightly from `ctx_tokens`).
+- All component values are exact OTel measurements; tool definition tokens are folded into System + instructions.
 - `--json` emits `{session_id: {session, model, turns, latest_ctx_tokens, token_limit, ctx_fill,
   skill_turns, tool_count, components: {sys_instructions, skill_content, tool_definitions,
   conversation_history: {tokens, pct, source, estimated}}}}`.
