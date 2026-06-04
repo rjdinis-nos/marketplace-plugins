@@ -957,6 +957,194 @@ def fmt_compactions_json(compactions_by_session):
     return result
 
 
+# ── context breakdown ─────────────────────────────────────────────────────────
+
+def _parse_tool_defs_by_session(paths, session_filter=None, session_ids=None):
+    """Return {session_id: tool_defs_json_str} from the first chat span per session."""
+    result = {}
+    for path in paths:
+        with _open_text(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    doc = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if doc.get("type") != "span" or not doc.get("name", "").startswith("chat "):
+                    continue
+                attrs = doc.get("attributes", {})
+                session = attrs.get("gen_ai.conversation.id", "unknown")
+                if session_filter and not session.startswith(session_filter):
+                    continue
+                if session_ids is not None and session not in session_ids:
+                    continue
+                if session not in result:
+                    tool_defs = attrs.get("gen_ai.tool.definitions", "")
+                    if tool_defs:
+                        result[session] = tool_defs
+    return result
+
+
+def _estimate_tool_defs(tool_defs_str):
+    """Return (token_est, tool_count) for a tool_definitions JSON string."""
+    token_est = len(tool_defs_str) // 4
+    try:
+        tool_count = len(json.loads(tool_defs_str))
+    except (json.JSONDecodeError, TypeError):
+        tool_count = 0
+    return token_est, tool_count
+
+
+def analyze_breakdown(turns_by_session, tool_defs_by_session):
+    """Return {session_id: breakdown_dict} with inferred context composition.
+
+    Methodology (no message content required):
+    - sys_instructions : cache_rd at turn 0  — content already cached before this session
+                         (system prompt + agent instructions pre-loaded from prior session)
+    - skill_content    : sum of cache_cr for turns where the 'skill' tool ran
+                         (newly cached content = skill payload injected this session)
+    - tool_definitions : len(tool_defs_json) // 4  — character-based token estimate
+    - conversation     : sum of ctx_delta for non-skill turns after turn 0
+                         (organic growth: user messages + model replies + tool outputs)
+    """
+    result = {}
+    for session, turns in turns_by_session.items():
+        if not turns:
+            continue
+
+        first_turn = turns[0]
+        latest_turn = turns[-1]
+        latest_ctx = latest_turn["cur"]
+        token_limit = latest_turn.get("token_limit", 0)
+
+        # ── tool definitions estimate ─────────────────────────────────────────
+        tool_defs_str = tool_defs_by_session.get(session, "")
+        tool_defs_est, tool_count = _estimate_tool_defs(tool_defs_str)
+
+        # ── skill content: cache_cr on skill-tool turns ───────────────────────
+        skill_turns = [t for t in turns if "skill" in t.get("tools", [])]
+        skill_tokens = sum(t["cache_cr"] for t in skill_turns)
+
+        # ── system + agent instructions: cache_rd at turn 0 ──────────────────
+        sys_tokens = first_turn.get("cache_rd", 0)
+
+        # ── conversation history: ctx_delta for non-skill turns after turn 0 ──
+        conv_tokens = sum(
+            t["delta"] for i, t in enumerate(turns)
+            if i > 0 and "skill" not in t.get("tools", [])
+        )
+
+        result[session] = {
+            "session": session,
+            "model": latest_turn["model"],
+            "turns": len(turns),
+            "latest_ctx_tokens": latest_ctx,
+            "token_limit": token_limit,
+            "ctx_fill": round(latest_ctx / token_limit, 4) if token_limit else None,
+            "skill_turns": len(skill_turns),
+            "tool_count": tool_count,
+            "components": {
+                "sys_instructions": {
+                    "tokens": sys_tokens,
+                    "pct": round(sys_tokens / latest_ctx, 4) if latest_ctx else 0.0,
+                    "source": "cache_rd at turn 0",
+                    "estimated": False,
+                },
+                "skill_content": {
+                    "tokens": skill_tokens,
+                    "pct": round(skill_tokens / latest_ctx, 4) if latest_ctx else 0.0,
+                    "source": f"cache_cr on {len(skill_turns)} skill turn(s)",
+                    "estimated": False,
+                },
+                "tool_definitions": {
+                    "tokens": tool_defs_est,
+                    "pct": round(tool_defs_est / latest_ctx, 4) if latest_ctx else 0.0,
+                    "source": f"tool_defs JSON ÷ 4 ({tool_count} tools) ~estimated",
+                    "estimated": True,
+                },
+                "conversation_history": {
+                    "tokens": conv_tokens,
+                    "pct": round(conv_tokens / latest_ctx, 4) if latest_ctx else 0.0,
+                    "source": "ctx_delta sum for non-skill turns after turn 0",
+                    "estimated": False,
+                },
+            },
+        }
+    return result
+
+
+def fmt_breakdown_table(breakdown_by_session, top=None):
+    if not breakdown_by_session:
+        return "No breakdown data found."
+
+    COMPONENT_ORDER = ["sys_instructions", "skill_content", "tool_definitions", "conversation_history"]
+    LABELS = {
+        "sys_instructions":   "System + instructions",
+        "skill_content":      "Skills loaded",
+        "tool_definitions":   "Tool definitions ~est",
+        "conversation_history": "Conversation history",
+    }
+
+    ordered = sorted(breakdown_by_session, key=lambda k: -(breakdown_by_session[k]["latest_ctx_tokens"]))
+    if top is not None:
+        ordered = ordered[:top]
+
+    out = []
+    multi = len(ordered) > 1
+
+    for session in ordered:
+        bd = breakdown_by_session[session]
+        ctx = bd["latest_ctx_tokens"]
+        lim = bd["token_limit"]
+        fill_str = _pct(bd["ctx_fill"]) if bd["ctx_fill"] is not None else "?"
+        limit_str = f"{lim // 1000}k" if lim else "?"
+
+        header = f"Session {_short(session)}  ({bd['model']}, {bd['turns']} turns)"
+        if multi:
+            out.append(f"\n{'─' * len(header)}")
+        out.append(header)
+        out.append(f"Context: {ctx:,} / {limit_str} tokens  ({fill_str} fill)\n")
+
+        rows = []
+        total_shown = 0
+        for key in COMPONENT_ORDER:
+            comp = bd["components"][key]
+            bar_width = int(comp["pct"] * 30)
+            bar = "█" * bar_width + "░" * (30 - bar_width)
+            rows.append([
+                LABELS[key],
+                f"{comp['tokens']:>7,}",
+                f"{comp['pct']:.1%}",
+                bar,
+                comp["source"],
+            ])
+            total_shown += comp["tokens"]
+
+        rows.append(["─" * 22, "─" * 7, "─" * 5, "─" * 30, ""])
+        rows.append(["Components total", f"{total_shown:>7,}", "", "", ""])
+
+        headers = ["Component", " Tokens", "  %", "Fill bar (30 cols)", "Source"]
+        widths = [max(len(str(r[i])) for r in [headers] + rows) for i in range(len(headers))]
+        out.append("  ".join(str(c).ljust(widths[i]) for i, c in enumerate(headers)))
+        out.append("  ".join("─" * w for w in widths))
+        for r in rows:
+            out.append("  ".join(str(c).ljust(widths[i]) for i, c in enumerate(r)))
+
+        if bd["skill_turns"] == 0:
+            out.append("\n  ℹ️  No skill tool detected — skill_content will be 0.")
+        out.append(
+            "\n  ~est = character-based estimate (len ÷ 4); all other values are exact OTel measurements."
+        )
+
+    return "\n".join(out)
+
+
+def fmt_breakdown_json(breakdown_by_session):
+    return breakdown_by_session
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -966,7 +1154,7 @@ def main():
     p = argparse.ArgumentParser(description="Copilot CLI session health reports from OTel signals.")
     p.add_argument("path", nargs="?", default=default_path,
                    help="OTel JSONL file (default: $COPILOT_OTEL_FILE_EXPORTER_PATH)")
-    p.add_argument("--report", choices=["context", "growth", "tools", "turns", "compactions"],
+    p.add_argument("--report", choices=["context", "growth", "tools", "turns", "compactions", "breakdown"],
                    default="context", help="report type (default: context)")
     p.add_argument("--by", choices=["session", "model", "all"], default="session",
                    help="grouping dimension (default: session)")
@@ -1015,6 +1203,22 @@ def main():
         session_ids = _find_last_n_session_ids(paths, args.last, since=args.since, until=args.until)
 
     warn_threshold = args.warn / 100.0
+
+    if args.report == "breakdown":
+        turns_by_session = parse_turns(paths, since=args.since, until=args.until,
+                                       session_filter=args.session, session_ids=session_ids)
+        if not turns_by_session:
+            print("No breakdown data found in the log.")
+            sys.exit(0)
+        tool_defs_by_session = _parse_tool_defs_by_session(
+            paths, session_filter=args.session, session_ids=session_ids)
+        breakdown = analyze_breakdown(turns_by_session, tool_defs_by_session)
+        if args.json:
+            print(json.dumps(fmt_breakdown_json(breakdown), indent=2))
+        else:
+            print(fmt_breakdown_table(breakdown, top=args.top))
+            print(f"\n(source: chat spans  files: {len(paths)})")
+        return
 
     if args.report == "compactions":
         turns_by_session = parse_turns(paths, since=args.since, until=args.until,

@@ -200,6 +200,35 @@ Shows one row per LLM round-trip with full token breakdown, latency, and tools c
 - `--turn N` — restrict output to a single turn number (0-indexed) across all groups.
 - `--json` emits `{session_id: [turn_objects]}` keyed by session.
 
+### `--report breakdown` — inferred context composition
+
+```
+python3 "$SKILL_DIR/scripts/analyze_sessions.py" --report breakdown
+         [PATH] [--top N]
+         [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--json]
+         [--session SESSION_ID] [--current-session] [--last N]
+```
+
+Shows an inferred breakdown of what is filling the context window per session,
+without requiring message content capture (`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`).
+
+- **Components** (all inferred from existing OTel span attributes):
+  - **System + instructions** — `cache_rd` at turn 0: content already cached before this session
+    (system prompt + agent instructions loaded from prior session cache). Exact measurement.
+  - **Skills loaded** — sum of `cache_cr` for turns where the `skill` tool ran:
+    newly cached content = skill payload injected this session. Exact measurement.
+  - **Tool definitions** — `len(gen_ai.tool.definitions JSON) ÷ 4`: character-based token estimate
+    for the tool schema sent with every request. Marked `~estimated`.
+  - **Conversation history** — sum of `ctx_delta` for non-skill turns after turn 0:
+    organic growth from user messages, model replies, and tool outputs. Exact measurement.
+
+- Output columns: **Component**, **Tokens**, **%**, fill bar (30 cols), **Source**
+- Footer row shows `Components total` (may differ slightly from `ctx_tokens` due to estimation).
+- `~est` suffix indicates character-based estimates; all other values are exact OTel measurements.
+- `--json` emits `{session_id: {session, model, turns, latest_ctx_tokens, token_limit, ctx_fill,
+  skill_turns, tool_count, components: {sys_instructions, skill_content, tool_definitions,
+  conversation_history: {tokens, pct, source, estimated}}}}`.
+
 ### `--report compactions` — context compaction events
 
 ```
