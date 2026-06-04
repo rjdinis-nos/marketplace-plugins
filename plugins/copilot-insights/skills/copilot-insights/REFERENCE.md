@@ -117,6 +117,36 @@ python3 "$SKILL_DIR/scripts/analyze_sessions.py" --report context
   - **ctx_limit** — context window token limit (from telemetry)
 - Sorted by `max_fill` descending (most at-risk first).
 - `--warn PCT` — warn threshold in % for the `turns_>70%` column (default 70).
-- `--json` emits a JSON array; keys mirror the column names (snake_case).
+- `--json` emits a JSON object keyed by group; keys mirror the column names (snake_case).
 - When max_fill is high, the model silently drops oldest turns, causing repeated
   work and extra token spend. Recommend starting a new session around 70% fill.
+
+### `--report growth` — context growth drivers
+
+```
+python3 "$SKILL_DIR/scripts/analyze_sessions.py" --report growth
+         [PATH] [--by session|model|all] [--top N]
+         [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--json] [--current-only]
+```
+
+Analyzes per-turn context delta and identifies what fills the context window.
+
+- Output columns (table mode):
+  - **group** — session UUID, model name, or `all`
+  - **turns** — number of turns analyzed
+  - **avg_delta** — average context tokens added per turn
+  - **max_delta** — largest single-turn delta
+  - **total_added** — sum of positive deltas across all turns
+  - **top_spikes** — top 10 turns by delta (initiator, model, tools used, final context size)
+  - **by_initiator** — breakdown by "user" vs "agent": avg/max delta, turn count
+  - **by_tool** — breakdown per tool used: avg/max delta, turn count; includes "[mcp]" suffix for MCP tools
+
+- `--json` output includes all table columns plus:
+  - **by_turn** — per-turn details array:
+    - `turn` — turn number (1-indexed)
+    - `delta_tokens` — context added this turn
+    - `current_context_tokens` — total context size after this turn
+    - `initiator` — `"user"` or `"agent"`
+    - `model` — model ID that responded
+    - `tools` — list of tools called on this turn
+    - `session` — session UUID (useful when grouping by model/all)

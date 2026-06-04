@@ -73,7 +73,7 @@ What would you like to start with?
 
 6. **Context pressure** (if asked). Run `analyze_sessions.py --report context [--by session|model|all] [--warn N]`. Sorted by max_fill desc. When max_fill near 100%, model silently drops old turns — recommend new session at ~70%.
 
-7. **Context growth** (if asked). Run `analyze_sessions.py --report growth [--by session|model|all]`. Shows per-turn delta, top spikes, by-tool and by-initiator breakdown — identifies what is filling the context window. MCP tools annotated `[mcp]`.
+7. **Context growth** (if asked). Run `analyze_sessions.py --report growth [--by session|model|all]` (add `--json` for per-turn details). Shows per-turn delta, top spikes, by-tool and by-initiator breakdown — identifies what is filling the context window. `--json` output includes `by_turn` array with delta_tokens, initiator, model, tools per turn. MCP tools annotated `[mcp]`.
 
 8. **Tool latency** (if asked). Run `analyze_sessions.py --report tools [--top N]`. Shows `execute_tool` span latency per tool: type (MCP/builtin), calls, avg/p95/max ms, errors. MCP entries include network round-trip to the MCP server.
 

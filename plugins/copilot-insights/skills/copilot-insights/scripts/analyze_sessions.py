@@ -407,6 +407,17 @@ def fmt_growth_table(groups, group_by, top_spikes=10, top=None):
 def fmt_growth_json(groups):
     result = {}
     for key, g in groups.items():
+        by_turn = []
+        for i, (delta, initiator, model, cur, tools, session) in enumerate(g.spikes, start=1):
+            by_turn.append({
+                "turn": i,
+                "delta_tokens": delta,
+                "current_context_tokens": cur,
+                "initiator": initiator,
+                "model": model,
+                "tools": tools or [],
+                "session": session,
+            })
         result[key] = {
             "turns": g.turns,
             "avg_delta": g.avg_delta,
@@ -420,6 +431,7 @@ def fmt_growth_json(groups):
                 k: {"avg_delta": int(sum(v)/len(v)), "max_delta": max(v), "turns": len(v)}
                 for k, v in g.tool_deltas.items()
             },
+            "by_turn": by_turn,
         }
     return result
 
