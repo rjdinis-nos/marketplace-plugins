@@ -28,16 +28,28 @@ Columns: calls, input, output, reasoning, cache_rd, cache_cr, total [, est_cost]
 
 ## analyze_sessions.py
 ```
-python3 "$SKILL_DIR/scripts/analyze_sessions.py" --report context|growth|tools [PATH]
-  --by session|model|all  --warn PCT  --top N
+python3 "$SKILL_DIR/scripts/analyze_sessions.py" --report context|growth|tools|turns|compactions [PATH]
+  --by session|model|all  --warn PCT  --top N  --turn N
   --since/--until YYYY-MM-DD  --json
   --session SESSION_ID  --current-session  --last N
 ```
-- `context` — fill % per group: turns, median/p95/max fill, turns above threshold, ctx_limit.
-- `growth`  — delta per turn: top spikes, by-tool and by-initiator breakdown. MCP tools annotated `[mcp]`.
-- `tools`   — `execute_tool` span latency: tool, type (MCP/builtin), calls, avg/p95/max ms, errors.
+- `context`     — fill % per group: turns, median/p95/max fill, turns above threshold, ctx_limit.
+- `growth`      — delta per turn: top spikes, by-tool and by-initiator breakdown. MCP tools annotated `[mcp]`.
+- `tools`       — `execute_tool` span latency: tool, type (MCP/builtin), calls, avg/p95/max ms, errors.
+- `turns`       — per-turn detail: turn_id, time, model, initiator, input/output/fresh/cache tokens, ctx fill%, latency, tools.
+- `compactions` — detects context-drop events (model summarised old turns); shows before/after fill%, tokens recovered.
 
 Session selectors (`--session`, `--current-session`, `--last`) are mutually exclusive.
+
+## chart_context.py
+```
+python3 "$SKILL_DIR/scripts/chart_context.py" [PATH]
+  --style spark|grid  --width N  --height N  --warn PCT  --no-color
+  --session SESSION_ID  --current-session  --last N
+```
+ASCII time-series chart of context window fill % over turns.
+- `spark` (default) — one row per session, sparkline of fill% across turns.
+- `grid` — 2-D plot of fill% over time for all sessions.
 
 ## Log rotation
 ```bash

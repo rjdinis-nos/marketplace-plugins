@@ -168,3 +168,77 @@ Analyzes per-turn context delta and identifies what fills the context window.
   Examples:
   - `--turn 0 --report turns --json` — show first turn details across sessions
   - `--turn 1 --report growth --json --by session` — compare second turn context delta per session
+
+### `--report turns` — per-turn token and latency detail
+
+```
+python3 "$SKILL_DIR/scripts/analyze_sessions.py" --report turns
+         [PATH] [--by session|model|all] [--turn N]
+         [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--json]
+         [--session SESSION_ID] [--current-session] [--last N]
+```
+
+Shows one row per LLM round-trip with full token breakdown, latency, and tools called.
+
+- Output columns:
+  - **#** — sequential index across all turns in the output
+  - **turn_id** — per-session turn counter (restarts at 0 each session)
+  - **time** — turn start time (UTC)
+  - **model** — model that responded
+  - **init** — initiator: `user` (human message) or `agent` (tool-result turn)
+  - **input** — total input tokens sent to the model
+  - **output** — tokens the model generated
+  - **fresh** — `input − cache_rd − cache_cr` (non-cached input)
+  - **cache_rd** — input tokens served from cache (discounted)
+  - **cache_cr** — input tokens written to cache (small premium)
+  - **rsn** — reasoning tokens (subset of output)
+  - **ctx_tok** — total context window tokens after this turn
+  - **fill%** — `ctx_tok / token_limit`
+  - **ttfc_ms** — time-to-first-chunk latency (ms)
+  - **srv_ms** — server-side duration (ms)
+  - **tools** — tools called during this turn (comma-separated)
+- `--turn N` — restrict output to a single turn number (0-indexed) across all groups.
+- `--json` emits `{session_id: [turn_objects]}` keyed by session.
+
+### `--report compactions` — context compaction events
+
+```
+python3 "$SKILL_DIR/scripts/analyze_sessions.py" --report compactions
+         [PATH] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--json]
+         [--session SESSION_ID] [--current-session] [--last N]
+```
+
+Detects turns where the context window dropped sharply — a sign the model
+auto-summarised (compacted) older turns to free space.
+
+- Output columns:
+  - **session** — session UUID (truncated)
+  - **turn#** — turn index where the drop occurred
+  - **time** — timestamp of the compaction turn
+  - **before** — context fill % before the drop
+  - **after** — context fill % after the drop
+  - **drop_tok** — tokens recovered (negative = freed)
+  - **recov%** — fraction of the previous context that was freed
+  - **tools** — tools active on that turn
+- Summary table: per-session compaction count, total tokens recovered, and max single drop.
+- A compaction means earlier conversation detail is permanently lost; consider starting a
+  new session at ~70% fill to avoid it.
+- `--json` emits `{session_id: [compaction_objects]}`.
+
+## chart_context.py
+
+```
+python3 "$SKILL_DIR/scripts/chart_context.py" [PATH]
+         [--style spark|grid] [--width N] [--height N] [--warn PCT] [--no-color]
+         [--session SESSION_ID] [--current-session] [--last N]
+```
+
+ASCII time-series chart of context window fill % across turns.
+
+- `--style spark` (default) — one row per session, sparkline of fill % across all turns.
+- `--style grid` — 2-D heatmap: x-axis = turns, y-axis = fill %, one column per session.
+- `--width N` — spark width or grid width in characters (default: 60).
+- `--height N` — grid height in rows (default: 20; grid only).
+- `--warn PCT` — threshold above which fill is highlighted (default: 70).
+- `--no-color` — disable ANSI colour output.
+- Session selectors (`--session`, `--current-session`, `--last`) are mutually exclusive.
