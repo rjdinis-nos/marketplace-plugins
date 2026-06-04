@@ -5,7 +5,9 @@ Run: python3 plugins/copilot-insights/tests/test_analyze_sessions.py
 No third-party deps; uses only the stdlib unittest.
 """
 import os
+import json
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "skills", "copilot-insights", "scripts"))
@@ -506,6 +508,322 @@ class AnalyzeGrowthTests(unittest.TestCase):
         }
         result = ses.analyze_growth(turns, "all")
         self.assertIn("all", result)
+
+
+class ParseTurnsSessionFilterTests(unittest.TestCase):
+    """Tests for session_filter and session_ids parameters of parse_turns()."""
+
+    # Timestamps: 1780087173 = 2026-05-29, +86400 = 2026-05-30, +172800 = 2026-05-31
+    _TS_A = [1780087173, 0]   # sess-aaa first turn (oldest)
+    _TS_B = [1780173573, 0]   # sess-bbb first turn
+    _TS_C = [1780259973, 0]   # sess-ccc first turn (newest)
+
+    def _chat_span(self, session_id, start_time):
+        return {
+            "type": "span",
+            "name": "chat claude-haiku-4.5",
+            "startTime": start_time,
+            "attributes": {
+                "gen_ai.conversation.id": session_id,
+                "gen_ai.response.model": "claude-haiku-4.5",
+                "gen_ai.usage.input_tokens": 100,
+                "gen_ai.usage.output_tokens": 50,
+                "github.copilot.initiator": "user",
+            },
+            "events": [
+                {
+                    "name": "github.copilot.session.usage_info",
+                    "attributes": {
+                        "github.copilot.current_tokens": 500,
+                        "github.copilot.token_limit": 10000,
+                    },
+                }
+            ],
+        }
+
+    def _write_temp(self, docs):
+        fd, path = tempfile.mkstemp(suffix=".jsonl")
+        try:
+            with os.fdopen(fd, "w") as f:
+                for doc in docs:
+                    f.write(json.dumps(doc) + "\n")
+            return path
+        except Exception:
+            os.close(fd)
+            raise
+
+    def _make_file(self, session_ids):
+        times = [self._TS_A, self._TS_B, self._TS_C]
+        docs = [self._chat_span(sid, times[i % len(times)]) for i, sid in enumerate(session_ids)]
+        return self._write_temp(docs)
+
+    def test_no_filter_returns_all_sessions(self):
+        path = self._make_file(["sess-aaa", "sess-bbb", "sess-ccc"])
+        try:
+            result = ses.parse_turns([path])
+            self.assertIn("sess-aaa", result)
+            self.assertIn("sess-bbb", result)
+            self.assertIn("sess-ccc", result)
+        finally:
+            os.unlink(path)
+
+    def test_session_filter_includes_matching(self):
+        path = self._make_file(["sess-aaa", "sess-bbb"])
+        try:
+            result = ses.parse_turns([path], session_filter="sess-aaa")
+            self.assertIn("sess-aaa", result)
+            self.assertNotIn("sess-bbb", result)
+        finally:
+            os.unlink(path)
+
+    def test_session_filter_excludes_non_matching(self):
+        path = self._make_file(["sess-aaa"])
+        try:
+            result = ses.parse_turns([path], session_filter="other")
+            self.assertEqual(result, {})
+        finally:
+            os.unlink(path)
+
+    def test_session_filter_prefix_match(self):
+        """Prefix 'sess' should match 'sess-aaa' but not 'other-zzz'."""
+        path = self._make_file(["sess-aaa", "other-zzz"])
+        try:
+            result = ses.parse_turns([path], session_filter="sess")
+            self.assertIn("sess-aaa", result)
+            self.assertNotIn("other-zzz", result)
+        finally:
+            os.unlink(path)
+
+    def test_session_ids_frozenset_includes_matching(self):
+        path = self._make_file(["sess-aaa", "sess-bbb"])
+        try:
+            result = ses.parse_turns([path], session_ids=frozenset({"sess-aaa"}))
+            self.assertIn("sess-aaa", result)
+            self.assertNotIn("sess-bbb", result)
+        finally:
+            os.unlink(path)
+
+    def test_session_ids_frozenset_excludes_non_matching(self):
+        path = self._make_file(["sess-aaa"])
+        try:
+            result = ses.parse_turns([path], session_ids=frozenset({"other"}))
+            self.assertEqual(result, {})
+        finally:
+            os.unlink(path)
+
+    def test_session_ids_empty_frozenset_excludes_all(self):
+        path = self._make_file(["sess-aaa", "sess-bbb"])
+        try:
+            result = ses.parse_turns([path], session_ids=frozenset())
+            self.assertEqual(result, {})
+        finally:
+            os.unlink(path)
+
+    def test_session_ids_multiple_sessions(self):
+        path = self._make_file(["sess-aaa", "sess-bbb", "sess-ccc"])
+        try:
+            result = ses.parse_turns([path], session_ids=frozenset({"sess-aaa", "sess-ccc"}))
+            self.assertIn("sess-aaa", result)
+            self.assertIn("sess-ccc", result)
+            self.assertNotIn("sess-bbb", result)
+        finally:
+            os.unlink(path)
+
+
+class ParseToolsSessionFilterTests(unittest.TestCase):
+    """Tests for session_filter and session_ids parameters of parse_tools()."""
+
+    def _tool_span(self, session_id, tool_name="bash"):
+        return {
+            "type": "span",
+            "name": f"execute_tool {tool_name}",
+            "startTime": [1780087173, 0],
+            "endTime": [1780087174, 0],
+            "attributes": {
+                "gen_ai.conversation.id": session_id,
+                "gen_ai.tool.name": tool_name,
+            },
+            "status": {},
+        }
+
+    def _write_temp(self, docs):
+        fd, path = tempfile.mkstemp(suffix=".jsonl")
+        try:
+            with os.fdopen(fd, "w") as f:
+                for doc in docs:
+                    f.write(json.dumps(doc) + "\n")
+            return path
+        except Exception:
+            os.close(fd)
+            raise
+
+    def test_no_filter_returns_all_tools(self):
+        docs = [
+            self._tool_span("sess-aaa", "bash"),
+            self._tool_span("sess-bbb", "view"),
+        ]
+        path = self._write_temp(docs)
+        try:
+            result = ses.parse_tools([path])
+            self.assertIn("bash", result)
+            self.assertIn("view", result)
+        finally:
+            os.unlink(path)
+
+    def test_session_filter_includes_matching(self):
+        docs = [
+            self._tool_span("sess-aaa", "bash"),
+            self._tool_span("sess-bbb", "view"),
+        ]
+        path = self._write_temp(docs)
+        try:
+            result = ses.parse_tools([path], session_filter="sess-aaa")
+            self.assertIn("bash", result)
+            self.assertNotIn("view", result)
+        finally:
+            os.unlink(path)
+
+    def test_session_filter_excludes_non_matching(self):
+        docs = [self._tool_span("sess-aaa", "bash")]
+        path = self._write_temp(docs)
+        try:
+            result = ses.parse_tools([path], session_filter="other")
+            self.assertEqual(result, {})
+        finally:
+            os.unlink(path)
+
+    def test_session_ids_frozenset_includes_matching(self):
+        docs = [
+            self._tool_span("sess-aaa", "bash"),
+            self._tool_span("sess-bbb", "view"),
+        ]
+        path = self._write_temp(docs)
+        try:
+            result = ses.parse_tools([path], session_ids=frozenset({"sess-aaa"}))
+            self.assertIn("bash", result)
+            self.assertNotIn("view", result)
+        finally:
+            os.unlink(path)
+
+    def test_session_ids_empty_frozenset_excludes_all(self):
+        docs = [self._tool_span("sess-aaa", "bash")]
+        path = self._write_temp(docs)
+        try:
+            result = ses.parse_tools([path], session_ids=frozenset())
+            self.assertEqual(result, {})
+        finally:
+            os.unlink(path)
+
+
+class FindLastNSessionIdsTests(unittest.TestCase):
+    """Tests for _find_last_n_session_ids() — backing --last N flag."""
+
+    _TS_A = [1780087173, 0]   # 2026-05-29 (oldest)
+    _TS_B = [1780173573, 0]   # 2026-05-30
+    _TS_C = [1780259973, 0]   # 2026-05-31 (newest)
+
+    def _chat_span(self, session_id, start_time):
+        return {
+            "type": "span",
+            "name": "chat claude-haiku-4.5",
+            "startTime": start_time,
+            "attributes": {
+                "gen_ai.conversation.id": session_id,
+                "gen_ai.response.model": "claude-haiku-4.5",
+                "gen_ai.usage.input_tokens": 100,
+                "gen_ai.usage.output_tokens": 50,
+                "github.copilot.initiator": "user",
+            },
+            "events": [
+                {
+                    "name": "github.copilot.session.usage_info",
+                    "attributes": {
+                        "github.copilot.current_tokens": 500,
+                        "github.copilot.token_limit": 10000,
+                    },
+                }
+            ],
+        }
+
+    def _write_temp(self, docs):
+        fd, path = tempfile.mkstemp(suffix=".jsonl")
+        try:
+            with os.fdopen(fd, "w") as f:
+                for doc in docs:
+                    f.write(json.dumps(doc) + "\n")
+            return path
+        except Exception:
+            os.close(fd)
+            raise
+
+    def _make_three_session_file(self):
+        """Write three sessions ordered oldest→newest: aaa, bbb, ccc."""
+        docs = [
+            self._chat_span("sess-aaa", self._TS_A),
+            self._chat_span("sess-bbb", self._TS_B),
+            self._chat_span("sess-ccc", self._TS_C),
+        ]
+        return self._write_temp(docs)
+
+    def test_last_1_returns_newest_session(self):
+        path = self._make_three_session_file()
+        try:
+            result = ses._find_last_n_session_ids([path], 1)
+            self.assertIsInstance(result, frozenset)
+            self.assertEqual(result, frozenset({"sess-ccc"}))
+        finally:
+            os.unlink(path)
+
+    def test_last_2_returns_two_most_recent(self):
+        path = self._make_three_session_file()
+        try:
+            result = ses._find_last_n_session_ids([path], 2)
+            self.assertIn("sess-bbb", result)
+            self.assertIn("sess-ccc", result)
+            self.assertNotIn("sess-aaa", result)
+        finally:
+            os.unlink(path)
+
+    def test_last_n_equal_to_session_count_returns_all(self):
+        path = self._make_three_session_file()
+        try:
+            result = ses._find_last_n_session_ids([path], 3)
+            self.assertEqual(result, frozenset({"sess-aaa", "sess-bbb", "sess-ccc"}))
+        finally:
+            os.unlink(path)
+
+    def test_last_n_greater_than_count_returns_all(self):
+        path = self._make_three_session_file()
+        try:
+            result = ses._find_last_n_session_ids([path], 100)
+            self.assertEqual(result, frozenset({"sess-aaa", "sess-bbb", "sess-ccc"}))
+        finally:
+            os.unlink(path)
+
+    def test_last_n_on_empty_file_returns_empty(self):
+        fd, path = tempfile.mkstemp(suffix=".jsonl")
+        os.close(fd)
+        try:
+            result = ses._find_last_n_session_ids([path], 5)
+            self.assertEqual(result, frozenset())
+        finally:
+            os.unlink(path)
+
+    def test_multiple_turns_same_session_uses_first_turn(self):
+        """Two turns for sess-aaa — first_ts should anchor it as oldest."""
+        docs = [
+            self._chat_span("sess-aaa", self._TS_A),   # first turn
+            self._chat_span("sess-aaa", self._TS_C),   # second turn (later)
+            self._chat_span("sess-bbb", self._TS_B),
+        ]
+        path = self._write_temp(docs)
+        try:
+            # sess-aaa first_ts = TS_A (oldest), sess-bbb first_ts = TS_B
+            # last 1 must be sess-bbb (more recent first turn than sess-aaa)
+            result = ses._find_last_n_session_ids([path], 1)
+            self.assertEqual(result, frozenset({"sess-bbb"}))
+        finally:
+            os.unlink(path)
 
 
 if __name__ == "__main__":

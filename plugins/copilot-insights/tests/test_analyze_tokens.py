@@ -599,5 +599,216 @@ class JsonResultTests(unittest.TestCase):
         self.assertEqual(result["cost_disclaimer"], "estimate only — not billing-grade")
 
 
+class CollectSessionTimesTests(unittest.TestCase):
+    """Tests for collect_session_times() — the pre-scan used by --last N."""
+
+    def _span_node(self, session_id, ts_nano_str, input_tok=100):
+        amap = {
+            "gen_ai.usage.input_tokens": input_tok,
+            "gen_ai.conversation.id": session_id,
+        }
+        attr_list = [
+            {"key": k, "value": {"intValue": str(v)} if isinstance(v, int) else {"stringValue": str(v)}}
+            for k, v in amap.items()
+        ]
+        return {"startTimeUnixNano": ts_nano_str, "attributes": attr_list}
+
+    def _write_temp(self, docs):
+        fd, path = tempfile.mkstemp(suffix=".jsonl")
+        try:
+            with os.fdopen(fd, "w") as f:
+                for doc in docs:
+                    f.write(json.dumps(doc) + "\n")
+            return path
+        except Exception:
+            os.close(fd)
+            raise
+
+    def test_empty_file_returns_empty_dict(self):
+        path = self._write_temp([])
+        try:
+            result = at.collect_session_times([path])
+            self.assertEqual(result, {})
+        finally:
+            os.unlink(path)
+
+    def test_single_session_captured(self):
+        doc = self._span_node("sess-aaa", "1780087173000000000")
+        path = self._write_temp([doc])
+        try:
+            result = at.collect_session_times([path])
+            self.assertIn("sess-aaa", result)
+            self.assertAlmostEqual(result["sess-aaa"], 1780087173.0, places=1)
+        finally:
+            os.unlink(path)
+
+    def test_multiple_sessions_all_captured(self):
+        docs = [
+            self._span_node("sess-aaa", "1780087173000000000"),
+            self._span_node("sess-bbb", "1780173573000000000"),
+        ]
+        path = self._write_temp(docs)
+        try:
+            result = at.collect_session_times([path])
+            self.assertIn("sess-aaa", result)
+            self.assertIn("sess-bbb", result)
+        finally:
+            os.unlink(path)
+
+    def test_picks_earliest_timestamp_for_session(self):
+        """Two spans for the same session — earliest ts must win."""
+        docs = [
+            self._span_node("sess-aaa", "1780173573000000000"),  # later
+            self._span_node("sess-aaa", "1780087173000000000"),  # earlier
+        ]
+        path = self._write_temp(docs)
+        try:
+            result = at.collect_session_times([path])
+            self.assertAlmostEqual(result["sess-aaa"], 1780087173.0, places=1)
+        finally:
+            os.unlink(path)
+
+    def test_since_filter_excludes_old_session(self):
+        """Span from 2026-05-29 should be excluded when since='2026-06-01'."""
+        doc = self._span_node("sess-old", "1780087173000000000")  # 2026-05-29
+        path = self._write_temp([doc])
+        try:
+            result = at.collect_session_times([path], since="2026-06-01")
+            self.assertEqual(result, {})
+        finally:
+            os.unlink(path)
+
+    def test_date_window_inclusive(self):
+        """Span exactly on the since=until boundary must be included."""
+        doc = self._span_node("sess-x", "1780087173000000000")  # 2026-05-29
+        path = self._write_temp([doc])
+        try:
+            result = at.collect_session_times([path], since="2026-05-29", until="2026-05-29")
+            self.assertIn("sess-x", result)
+        finally:
+            os.unlink(path)
+
+    def test_span_without_usage_key_ignored(self):
+        """Spans lacking any usage key must not appear in the result."""
+        doc = {"startTimeUnixNano": "1780087173000000000", "attributes": [
+            {"key": "other.key", "value": {"stringValue": "v"}}
+        ]}
+        path = self._write_temp([doc])
+        try:
+            result = at.collect_session_times([path])
+            self.assertEqual(result, {})
+        finally:
+            os.unlink(path)
+
+
+class SessionFilterAnalyzeTests(unittest.TestCase):
+    """Tests for session_filter and session_ids parameters of analyze()."""
+
+    def _span_node(self, session_id, ts_nano="1780087173000000000", input_tok=100):
+        amap = {
+            "gen_ai.usage.input_tokens": input_tok,
+            "gen_ai.usage.output_tokens": 50,
+            "gen_ai.response.model": "claude-haiku-4.5",
+            "gen_ai.conversation.id": session_id,
+        }
+        attr_list = [
+            {"key": k, "value": {"intValue": str(v)} if isinstance(v, int) else {"stringValue": str(v)}}
+            for k, v in amap.items()
+        ]
+        return {"startTimeUnixNano": ts_nano, "attributes": attr_list}
+
+    def _write_temp(self, docs):
+        fd, path = tempfile.mkstemp(suffix=".jsonl")
+        try:
+            with os.fdopen(fd, "w") as f:
+                for doc in docs:
+                    f.write(json.dumps(doc) + "\n")
+            return path
+        except Exception:
+            os.close(fd)
+            raise
+
+    def _make_file(self, sessions):
+        """Write spans for multiple sessions. sessions = {sid: input_tok}."""
+        docs = [self._span_node(sid, input_tok=tok) for sid, tok in sessions.items()]
+        return self._write_temp(docs)
+
+    def test_session_filter_includes_matching_session(self):
+        path = self._make_file({"sess-aaa": 100, "sess-bbb": 200})
+        try:
+            groups, found, _, _ = at.analyze([path], "session", session_filter="sess-aaa")
+            self.assertIn("sess-aaa", groups)
+            self.assertNotIn("sess-bbb", groups)
+        finally:
+            os.unlink(path)
+
+    def test_session_filter_excludes_non_matching(self):
+        path = self._make_file({"sess-aaa": 100})
+        try:
+            groups, found, _, _ = at.analyze([path], "session", session_filter="other")
+            self.assertFalse(found)
+            self.assertEqual(len(groups), 0)
+        finally:
+            os.unlink(path)
+
+    def test_session_filter_prefix_match(self):
+        """Partial prefix 'sess' should match 'sess-aaa'."""
+        path = self._make_file({"sess-aaa": 100, "other-zzz": 200})
+        try:
+            groups, found, _, _ = at.analyze([path], "session", session_filter="sess")
+            self.assertIn("sess-aaa", groups)
+            self.assertNotIn("other-zzz", groups)
+        finally:
+            os.unlink(path)
+
+    def test_session_ids_frozenset_includes_matching(self):
+        path = self._make_file({"sess-aaa": 100, "sess-bbb": 200})
+        try:
+            groups, found, _, _ = at.analyze([path], "session",
+                                             session_ids=frozenset({"sess-aaa"}))
+            self.assertIn("sess-aaa", groups)
+            self.assertNotIn("sess-bbb", groups)
+        finally:
+            os.unlink(path)
+
+    def test_session_ids_frozenset_excludes_non_matching(self):
+        path = self._make_file({"sess-aaa": 100})
+        try:
+            groups, found, _, _ = at.analyze([path], "session",
+                                             session_ids=frozenset({"other-zzz"}))
+            self.assertFalse(found)
+        finally:
+            os.unlink(path)
+
+    def test_session_ids_empty_frozenset_excludes_all(self):
+        path = self._make_file({"sess-aaa": 100, "sess-bbb": 200})
+        try:
+            groups, found, _, _ = at.analyze([path], "session",
+                                             session_ids=frozenset())
+            self.assertFalse(found)
+        finally:
+            os.unlink(path)
+
+    def test_session_ids_multiple_sessions(self):
+        path = self._make_file({"sess-aaa": 100, "sess-bbb": 200, "sess-ccc": 300})
+        try:
+            groups, found, _, _ = at.analyze([path], "session",
+                                             session_ids=frozenset({"sess-aaa", "sess-ccc"}))
+            self.assertIn("sess-aaa", groups)
+            self.assertIn("sess-ccc", groups)
+            self.assertNotIn("sess-bbb", groups)
+        finally:
+            os.unlink(path)
+
+    def test_no_session_filter_includes_all(self):
+        path = self._make_file({"sess-aaa": 100, "sess-bbb": 200})
+        try:
+            groups, found, _, _ = at.analyze([path], "session")
+            self.assertIn("sess-aaa", groups)
+            self.assertIn("sess-bbb", groups)
+        finally:
+            os.unlink(path)
+
+
 if __name__ == "__main__":
     unittest.main()
