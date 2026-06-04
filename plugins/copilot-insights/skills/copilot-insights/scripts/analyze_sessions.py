@@ -11,6 +11,7 @@ Usage:
   python3 analyze_sessions.py --by model
   python3 analyze_sessions.py --by all
   python3 analyze_sessions.py --session fe612bf2     # filter to one session (prefix ok)
+  python3 analyze_sessions.py --turn 1               # filter to specific turn number (growth/json only)
   python3 analyze_sessions.py --warn 60              # warn at 60% fill instead of 70%
   python3 analyze_sessions.py --top 5                # show top 5 groups
   python3 analyze_sessions.py --since 2026-05-29
@@ -404,7 +405,7 @@ def fmt_growth_table(groups, group_by, top_spikes=10, top=None):
     return "\n".join(out)
 
 
-def fmt_growth_json(groups):
+def fmt_growth_json(groups, turn_filter=None):
     result = {}
     for key, g in groups.items():
         by_turn = []
@@ -418,20 +419,23 @@ def fmt_growth_json(groups):
                 "tools": tools or [],
                 "session": session,
             })
+        # Filter by_turn if --turn is specified
+        if turn_filter is not None:
+           by_turn = [t for t in by_turn if t["turn"] == turn_filter]
         result[key] = {
-            "turns": g.turns,
-            "avg_delta": g.avg_delta,
-            "max_delta": g.max_delta,
-            "total_added": g.total_added,
-            "by_initiator": {
-                k: {"avg_delta": int(sum(v)/len(v)), "max_delta": max(v), "turns": len(v)}
-                for k, v in g.init_deltas.items()
-            },
-            "by_tool": {
-                k: {"avg_delta": int(sum(v)/len(v)), "max_delta": max(v), "turns": len(v)}
-                for k, v in g.tool_deltas.items()
-            },
-            "by_turn": by_turn,
+           "turns": g.turns,
+           "avg_delta": g.avg_delta,
+           "max_delta": g.max_delta,
+           "total_added": g.total_added,
+           "by_initiator": {
+               k: {"avg_delta": int(sum(v)/len(v)), "max_delta": max(v), "turns": len(v)}
+               for k, v in g.init_deltas.items()
+           },
+           "by_tool": {
+               k: {"avg_delta": int(sum(v)/len(v)), "max_delta": max(v), "turns": len(v)}
+               for k, v in g.tool_deltas.items()
+           },
+           "by_turn": by_turn,
         }
     return result
 
@@ -947,6 +951,8 @@ def main():
                    help="grouping dimension (default: session)")
     p.add_argument("--session", metavar="SESSION_ID",
                    help="filter to a single session (prefix match, e.g. fe612bf2)")
+    p.add_argument("--turn", type=int, metavar="N",
+                   help="filter by_turn array to specific turn number (--report growth --json only)")
     p.add_argument("--warn", type=float, default=70.0, metavar="PCT",
                    help="warning threshold %% for context fill (default: 70)")
     p.add_argument("--top", type=int, default=None, metavar="N",
@@ -1001,7 +1007,7 @@ def main():
             sys.exit(0)
         groups = analyze_growth(turns_by_session, args.by)
         if args.json:
-            print(json.dumps(fmt_growth_json(groups), indent=2))
+            print(json.dumps(fmt_growth_json(groups, turn_filter=args.turn), indent=2))
         else:
             print(fmt_growth_table(groups, args.by, top_spikes=10, top=args.top))
             print(f"\n(source: chat span tool hooks  files: {len(paths)})")

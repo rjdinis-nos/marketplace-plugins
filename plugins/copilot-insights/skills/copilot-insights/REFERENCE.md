@@ -125,7 +125,7 @@ python3 "$SKILL_DIR/scripts/analyze_sessions.py" --report context
 
 ```
 python3 "$SKILL_DIR/scripts/analyze_sessions.py" --report growth
-         [PATH] [--by session|model|all] [--top N]
+         [PATH] [--by session|model|all] [--top N] [--turn N]
          [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--json] [--current-only]
 ```
 
@@ -150,3 +150,7 @@ Analyzes per-turn context delta and identifies what fills the context window.
     - `model` — model ID that responded
     - `tools` — list of tools called on this turn
     - `session` — session UUID (useful when grouping by model/all)
+
+- `--turn N` — filter `by_turn` array to a specific turn number (e.g., `--turn 1` shows first turn across all groups).
+  Only applies to `--report growth --json`. Useful for cross-session comparisons: `--turn 1 --by session --json`
+  shows what context each session added on their first turn.
