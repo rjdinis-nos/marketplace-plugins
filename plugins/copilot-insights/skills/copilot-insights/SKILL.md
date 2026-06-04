@@ -28,7 +28,7 @@ Columns: calls, input, output, reasoning, cache_rd, cache_cr, total [, est_cost]
 
 ## analyze_sessions.py
 ```
-python3 "$SKILL_DIR/scripts/analyze_sessions.py" --report context|growth|tools|turns|compactions [PATH]
+python3 "$SKILL_DIR/scripts/analyze_sessions.py" --report context|growth|tools|turns|compactions|breakdown [PATH]
   --by session|model|all  --warn PCT  --top N  --turn N
   --since/--until YYYY-MM-DD  --json
   --session SESSION_ID  --current-session  --last N
@@ -38,6 +38,9 @@ python3 "$SKILL_DIR/scripts/analyze_sessions.py" --report context|growth|tools|t
 - `tools`       — `execute_tool` span latency: tool, type (MCP/builtin), calls, avg/p95/max ms, errors.
 - `turns`       — per-turn detail: turn_id, time, model, initiator, input/output/fresh/cache tokens, ctx fill%, latency, tools.
 - `compactions` — detects context-drop events (model summarised old turns); shows before/after fill%, tokens recovered.
+- `breakdown`   — inferred context composition (no content capture needed): sys_instructions (cache_rd at turn 0),
+                  skill_content (cache_cr on skill turns), tool_definitions (~estimated from JSON length ÷ 4),
+                  conversation_history (ctx_delta sum for non-skill turns after turn 0). Shows tokens, %, ASCII fill bar.
 
 Session selectors (`--session`, `--current-session`, `--last`) are mutually exclusive.
 

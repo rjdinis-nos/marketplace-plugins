@@ -25,6 +25,7 @@ Here's what I can report:
 - 💰 **Cost estimates** — per-model pricing using the bundled rates snapshot
 - 🪟 **Context window pressure** — fill % per session/model, spot sessions near the limit
 - 🔍 **Per-turn detail** — token breakdown, latency, and tools per LLM round-trip
+- 🧩 **Context breakdown** — inferred composition: system prompt, skills, tool definitions, conversation history
 - 🗜️ **Compaction detection** — spots turns where the model auto-summarised old context
 - 🛠️ **Tool latency** — per-tool call times and error rates, with MCP vs builtin classification
 - 🔄 **Log rotation** — automatic size-gated rotation, or on-demand
@@ -84,6 +85,8 @@ What would you like to start with?
 10. **Tool latency** (if asked). Run `analyze_sessions.py --report tools [--top N]`. Shows `execute_tool` span latency per tool: type (MCP/builtin), calls, avg/p95/max ms, errors. MCP entries include network round-trip to the MCP server.
 
 11. **Context chart** (if asked). Run `chart_context.py [--style spark|grid] [--last N] [--current-session]`. Renders an ASCII time-series chart of context fill % across turns. `spark` (default) = one sparkline row per session; `grid` = 2-D heatmap. Accepts the same session selectors as the other scripts.
+
+12. **Context breakdown** (if asked). Run `analyze_sessions.py --report breakdown [--current-session|--last N|--session ID]`. Shows inferred per-component composition of the context window without message content capture: **sys_instructions** (cache_rd at turn 0 — previously-cached system prompt), **skill_content** (cache_cr on skill-tool turns — skill payload injected this session), **tool_definitions** (~estimated from `gen_ai.tool.definitions` JSON length ÷ 4), **conversation_history** (ctx_delta sum for non-skill turns after turn 0). Renders tokens, % of context, and an ASCII fill bar. Use `--json` for machine output.
 
 ## Next steps
 
