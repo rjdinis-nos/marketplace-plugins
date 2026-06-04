@@ -24,6 +24,8 @@ Here's what I can report:
 - 📊 **Token usage** — calls, input/output/cache/reasoning tokens, grouped by model, session, or day
 - 💰 **Cost estimates** — per-model pricing using the bundled rates snapshot
 - 🪟 **Context window pressure** — fill % per session/model, spot sessions near the limit
+- 🔍 **Per-turn detail** — token breakdown, latency, and tools per LLM round-trip
+- 🗜️ **Compaction detection** — spots turns where the model auto-summarised old context
 - 🛠️ **Tool latency** — per-tool call times and error rates, with MCP vs builtin classification
 - 🔄 **Log rotation** — automatic size-gated rotation, or on-demand
 
@@ -65,7 +67,7 @@ What would you like to start with?
 
 2. **Enable capture** (if needed). Recommend file exporter. Remind: only affects newly started sessions. For dashboards offer `OTEL_EXPORTER_OTLP_ENDPOINT` + `OTEL_EXPORTER_OTLP_HEADERS`.
 
-3. **Report usage.** Locate scripts with `find ~ -path '*copilot-insights/scripts/analyze_tokens.py' 2>/dev/null`. Run `--by model|session|day|all`; narrow with `--top N` / `--since/--until`; add `--show-time` for timestamps; `--json` for machine output.
+3. **Report usage.** Locate scripts with `find ~ -path '*copilot-insights/scripts/analyze_tokens.py' 2>/dev/null`. Run `--by model|session|day|all`; narrow with `--top N` / `--since/--until`; add `--show-time` for timestamps; `--json` for machine output. Session selectors (mutually exclusive): `--current-session` (active session via `COPILOT_AGENT_SESSION_ID`), `--last N` (N most recent sessions), `--session SESSION_ID` (prefix match).
 
 4. **Estimate cost** (only when asked). Add `--rates <skill-dir>/scripts/rates.copilot.json` to price each model automatically. Always label as **estimate**; note rates may be stale (verify `_source` URL in file); never invent rates silently. Fallback: `--rate-input/output/cache-read/cache-write`.
 
@@ -73,9 +75,15 @@ What would you like to start with?
 
 6. **Context pressure** (if asked). Run `analyze_sessions.py --report context [--by session|model|all] [--warn N]`. Sorted by max_fill desc. When max_fill near 100%, model silently drops old turns — recommend new session at ~70%.
 
-7. **Context growth** (if asked). Run `analyze_sessions.py --report growth [--by session|model|all]` (add `--json` for per-turn details). Shows per-turn delta, top spikes, by-tool and by-initiator breakdown — identifies what is filling the context window. `--json` output includes `by_turn` array with delta_tokens, initiator, model, tools per turn. MCP tools annotated `[mcp]`. Use `--turn N` to filter to a specific turn (1-indexed; e.g., `--turn 1 --by session --json` compares first-turn deltas across sessions).
+7. **Context growth** (if asked). Run `analyze_sessions.py --report growth [--by session|model|all] [--turn N]` (add `--json` for per-turn details). Shows per-turn delta, top spikes, by-tool and by-initiator breakdown — identifies what is filling the context window. `--json` output includes `by_turn` array with delta_tokens, initiator, model, tools per turn. MCP tools annotated `[mcp]`. Use `--turn N` to filter to a specific turn (0-indexed; e.g., `--turn 1 --by session --json` compares second turn deltas across sessions).
 
-8. **Tool latency** (if asked). Run `analyze_sessions.py --report tools [--top N]`. Shows `execute_tool` span latency per tool: type (MCP/builtin), calls, avg/p95/max ms, errors. MCP entries include network round-trip to the MCP server.
+8. **Per-turn details** (if asked). Run `analyze_sessions.py --report turns [--by session|model|all] [--turn N] [--json]`. Shows per-turn token usage (input/output/fresh/cache), latency (ttfc_ms, srv_ms), fill %, model, initiator, and tools. Use `--turn N` to filter to a specific turn (e.g., `--turn 0 --json` shows first turn across sessions).
+
+9. **Compaction detection** (if asked). Run `analyze_sessions.py --report compactions`. Detects turns where context dropped sharply — the model auto-summarised old turns to free space. Shows before/after fill %, tokens recovered, and a per-session summary. Compaction means earlier conversation detail is permanently lost; recommend starting a new session at ~70% fill to avoid it.
+
+10. **Tool latency** (if asked). Run `analyze_sessions.py --report tools [--top N]`. Shows `execute_tool` span latency per tool: type (MCP/builtin), calls, avg/p95/max ms, errors. MCP entries include network round-trip to the MCP server.
+
+11. **Context chart** (if asked). Run `chart_context.py [--style spark|grid] [--last N] [--current-session]`. Renders an ASCII time-series chart of context fill % across turns. `spark` (default) = one sparkline row per session; `grid` = 2-D heatmap. Accepts the same session selectors as the other scripts.
 
 ## Next steps
 
