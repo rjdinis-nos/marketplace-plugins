@@ -493,11 +493,14 @@ def fmt_turns_table(turns_by_session):
     return "\n".join(out)
 
 
-def fmt_turns_json(turns_by_session):
+def fmt_turns_json(turns_by_session, turn_filter=None):
     result = {}
     for session, turns in turns_by_session.items():
         result[session] = []
         for i, t in enumerate(turns):
+            # Filter by turn index if --turn is specified
+            if turn_filter is not None and i != turn_filter:
+                continue
             fresh = t["input_tokens"] - t["cache_rd"] - t["cache_cr"]
             lim = t.get("token_limit") or 0
             fill = t["cur"] / lim if lim else 0
@@ -993,7 +996,7 @@ def main():
             print("No per-turn data found in the log.")
             sys.exit(0)
         if args.json:
-            print(json.dumps(fmt_turns_json(turns_by_session), indent=2))
+            print(json.dumps(fmt_turns_json(turns_by_session, turn_filter=args.turn), indent=2))
         else:
             print(fmt_turns_table(turns_by_session))
             print(f"\n(source: chat spans  files: {len(paths)})")

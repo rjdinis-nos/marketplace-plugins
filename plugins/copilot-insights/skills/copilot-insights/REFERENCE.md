@@ -151,6 +151,9 @@ Analyzes per-turn context delta and identifies what fills the context window.
     - `tools` — list of tools called on this turn
     - `session` — session UUID (useful when grouping by model/all)
 
-- `--turn N` — filter `by_turn` array to a specific turn number (e.g., `--turn 1` shows first turn across all groups).
-  Only applies to `--report growth --json`. Useful for cross-session comparisons: `--turn 1 --by session --json`
-  shows what context each session added on their first turn.
+- `--turn N` — filter per-turn data to a specific turn number (0-indexed).
+  For `--report growth --json`: filters `by_turn` array to show only that turn across all groups.
+  For `--report turns --json`: filters turn records to show only that turn per session.
+  Examples:
+  - `--turn 0 --report turns --json` — show first turn details across sessions
+  - `--turn 1 --report growth --json --by session` — compare second turn context delta per session
