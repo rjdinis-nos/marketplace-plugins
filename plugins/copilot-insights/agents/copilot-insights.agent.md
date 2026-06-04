@@ -73,9 +73,11 @@ What would you like to start with?
 
 6. **Context pressure** (if asked). Run `analyze_sessions.py --report context [--by session|model|all] [--warn N]`. Sorted by max_fill desc. When max_fill near 100%, model silently drops old turns — recommend new session at ~70%.
 
-7. **Context growth** (if asked). Run `analyze_sessions.py --report growth [--by session|model|all]` (add `--json` for per-turn details). Shows per-turn delta, top spikes, by-tool and by-initiator breakdown — identifies what is filling the context window. `--json` output includes `by_turn` array with delta_tokens, initiator, model, tools per turn. MCP tools annotated `[mcp]`.
+7. **Context growth** (if asked). Run `analyze_sessions.py --report growth [--by session|model|all] [--turn N]` (add `--json` for per-turn details). Shows per-turn delta, top spikes, by-tool and by-initiator breakdown — identifies what is filling the context window. `--json` output includes `by_turn` array with delta_tokens, initiator, model, tools per turn. MCP tools annotated `[mcp]`. Use `--turn N` to filter to a specific turn across groups (e.g., `--turn 1 --by session --json` compares second turn deltas).
 
-8. **Tool latency** (if asked). Run `analyze_sessions.py --report tools [--top N]`. Shows `execute_tool` span latency per tool: type (MCP/builtin), calls, avg/p95/max ms, errors. MCP entries include network round-trip to the MCP server.
+8. **Per-turn details** (if asked). Run `analyze_sessions.py --report turns [--by session|model|all] [--turn N] [--json]`. Shows per-turn token usage, latency, and model details. Use `--turn N` to filter to a specific turn (e.g., `--turn 0 --json` shows first turn across sessions).
+
+9. **Tool latency** (if asked). Run `analyze_sessions.py --report tools [--top N]`. Shows `execute_tool` span latency per tool: type (MCP/builtin), calls, avg/p95/max ms, errors. MCP entries include network round-trip to the MCP server.
 
 ## Next steps
 
