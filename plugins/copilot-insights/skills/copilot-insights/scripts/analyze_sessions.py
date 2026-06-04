@@ -1028,7 +1028,16 @@ def analyze_breakdown(turns_by_session, tool_defs_by_session):
         skill_tokens = sum(t["cache_cr"] for t in skill_turns)
 
         # ── system + agent instructions: cache_rd at turn 0 ──────────────────
+        # Prefer cache_rd (prompt already cached from a prior session).
+        # Fall back to cache_cr at turn 0 when cache_rd is 0: this means the
+        # system prompt was written to cache for the first time this session.
+        # Note: in this case skill content loaded at startup is blended in and
+        # cannot be separated without message-content capture.
         sys_tokens = first_turn.get("cache_rd", 0)
+        sys_first_write = False
+        if sys_tokens == 0 and first_turn.get("cache_cr", 0) > 0:
+            sys_tokens = first_turn.get("cache_cr", 0)
+            sys_first_write = True
 
         # ── conversation history: ctx_delta for non-skill turns after turn 0 ──
         conv_tokens = sum(
@@ -1044,12 +1053,17 @@ def analyze_breakdown(turns_by_session, tool_defs_by_session):
             "token_limit": token_limit,
             "ctx_fill": round(latest_ctx / token_limit, 4) if token_limit else None,
             "skill_turns": len(skill_turns),
+            "skill_first_write": sys_first_write,
             "tool_count": tool_count,
             "components": {
                 "sys_instructions": {
                     "tokens": sys_tokens,
                     "pct": round(sys_tokens / latest_ctx, 4) if latest_ctx else 0.0,
-                    "source": "cache_rd at turn 0",
+                    "source": (
+                        "cache_cr at turn 0 (first write this session)"
+                        if sys_first_write
+                        else "cache_rd at turn 0"
+                    ),
                     "estimated": False,
                 },
                 "skill_content": {
@@ -1133,7 +1147,14 @@ def fmt_breakdown_table(breakdown_by_session, top=None):
             out.append("  ".join(str(c).ljust(widths[i]) for i, c in enumerate(r)))
 
         if bd["skill_turns"] == 0:
-            out.append("\n  ℹ️  No skill tool detected — skill_content will be 0.")
+            if bd.get("skill_first_write"):
+                out.append(
+                    "\n  ⚠️  System prompt was written to cache on turn 0 (first-session write)."
+                    "\n      Skills loaded at startup are blended into 'System + instructions'"
+                    "\n      and cannot be separated without message-content capture."
+                )
+            else:
+                out.append("\n  ℹ️  No skill tool detected — skill_content will be 0.")
         out.append(
             "\n  ~est = character-based estimate (len ÷ 4); all other values are exact OTel measurements."
         )
