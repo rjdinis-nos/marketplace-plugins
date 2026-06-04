@@ -75,12 +75,17 @@ handles both array-form and plain-object attributes.
 
 ```
 python3 "$SKILL_DIR/scripts/analyze_tokens.py" [PATH] [--by model|session|day|all] [--json]
-        [--top N] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--show-time] [--current-only]
+        [--top N] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--show-time]
+        [--session SESSION_ID] [--current-session] [--last N]
         [--rates FILE] [--rate-input N] [--rate-output N] [--rate-cache-read N] [--rate-cache-write N] [--currency SYM]
 ```
 (`$SKILL_DIR` is this skill's directory, i.e. the folder containing this file.)
 - `PATH` defaults to `$COPILOT_OTEL_FILE_EXPORTER_PATH`, then `~/.copilot/logs/otel-signals.jsonl`.
-- By default also reads rotated/compressed siblings (`PATH*`, including `.gz`); use `--current-only` to read just the active file.
+- Always reads rotated/compressed siblings (`PATH*`, including `.gz`) alongside the active file.
+- `--session SESSION_ID` — filter to one session (prefix match, e.g. `fe612bf2`).
+- `--current-session` — filter to the active Copilot session (reads `COPILOT_AGENT_SESSION_ID`).
+- `--last N` — restrict to the N most recent sessions by first activity.
+- `--session`, `--current-session`, and `--last` are mutually exclusive.
 - `--show-time` adds `first`/`last` activity datetime columns (UTC, derived from span timestamps); in `--json` these appear as `first_ts`/`last_ts` ISO-8601 strings.
 - Prefers per-call span attributes; falls back to the token metric if no span usage is present.
 - Cost: pass a `--rates FILE` (or `$COPILOT_TOKEN_RATES`) JSON file to add an
@@ -100,11 +105,16 @@ python3 "$SKILL_DIR/scripts/analyze_tokens.py" [PATH] [--by model|session|day|al
 ```
 python3 "$SKILL_DIR/scripts/analyze_sessions.py" --report context
          [PATH] [--by session|model|all] [--warn PCT] [--top N]
-         [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--json] [--current-only]
+         [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--json]
+         [--session SESSION_ID] [--current-session] [--last N]
 ```
 (`$SKILL_DIR` is this skill's directory, i.e. the folder containing this file.)
 - `PATH` defaults to `$COPILOT_OTEL_FILE_EXPORTER_PATH`, then `~/.copilot/logs/otel-signals.jsonl`.
-- By default also reads rotated/compressed siblings; use `--current-only` to read just the active file.
+- Always reads rotated/compressed siblings alongside the active file.
+- `--session SESSION_ID` — filter to one session (prefix match).
+- `--current-session` — filter to the active Copilot session (reads `COPILOT_AGENT_SESSION_ID`).
+- `--last N` — restrict to the N most recent sessions by first activity.
+- `--session`, `--current-session`, and `--last` are mutually exclusive.
 - `--report context` — context window fill analysis. Reads `github.copilot.session.usage_info`
   events inside `chat` spans; computes `current_tokens / token_limit` per turn.
 - Output columns:
@@ -126,7 +136,8 @@ python3 "$SKILL_DIR/scripts/analyze_sessions.py" --report context
 ```
 python3 "$SKILL_DIR/scripts/analyze_sessions.py" --report growth
          [PATH] [--by session|model|all] [--top N] [--turn N]
-         [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--json] [--current-only]
+         [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--json]
+         [--session SESSION_ID] [--current-session] [--last N]
 ```
 
 Analyzes per-turn context delta and identifies what fills the context window.
