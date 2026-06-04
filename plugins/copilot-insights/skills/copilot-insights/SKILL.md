@@ -19,7 +19,8 @@ Add to `~/.bashrc`/`~/.zshrc`. Only captures sessions started *after* this is se
 python3 "$SKILL_DIR/scripts/analyze_tokens.py" [PATH]
   --by model|session|day|all    (default: model)
   --rates FILE                  per-model rates JSON (see rates.copilot.json)
-  --top N  --since/--until YYYY-MM-DD  --show-time  --json  --current-only
+  --top N  --since/--until YYYY-MM-DD  --show-time  --json
+  --session SESSION_ID  --current-session  --last N
   --rate-input N  --rate-output N  --rate-cache-read N  --rate-cache-write N
 ```
 Columns: calls, input, output, reasoning, cache_rd, cache_cr, total [, est_cost].
@@ -29,11 +30,14 @@ Columns: calls, input, output, reasoning, cache_rd, cache_cr, total [, est_cost]
 ```
 python3 "$SKILL_DIR/scripts/analyze_sessions.py" --report context|growth|tools [PATH]
   --by session|model|all  --warn PCT  --top N
-  --since/--until YYYY-MM-DD  --json  --current-only
+  --since/--until YYYY-MM-DD  --json
+  --session SESSION_ID  --current-session  --last N
 ```
 - `context` — fill % per group: turns, median/p95/max fill, turns above threshold, ctx_limit.
 - `growth`  — delta per turn: top spikes, by-tool and by-initiator breakdown. MCP tools annotated `[mcp]`.
 - `tools`   — `execute_tool` span latency: tool, type (MCP/builtin), calls, avg/p95/max ms, errors.
+
+Session selectors (`--session`, `--current-session`, `--last`) are mutually exclusive.
 
 ## Log rotation
 ```bash

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "copilot-insights",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "Copilot CLI observability: token usage, cost estimates, and session health (context window pressure, latency) via built-in OpenTelemetry. Bundles the copilot-insights agent, skill, and analyzer scripts.",
   "author": {
     "name": "Ricardo Dinis",

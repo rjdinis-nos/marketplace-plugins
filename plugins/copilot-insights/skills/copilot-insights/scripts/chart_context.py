@@ -5,11 +5,13 @@ Usage:
   python3 chart_context.py                          # sparkline (default)
   python3 chart_context.py --style grid             # 2-D grid chart
   python3 chart_context.py --session fe612bf2
+  python3 chart_context.py --current-session        # chart the active copilot session
+  python3 chart_context.py --last 3                 # chart the 3 most recent sessions
   python3 chart_context.py --width 100 --warn 60
   python3 chart_context.py --no-color
 
 Reads $COPILOT_OTEL_FILE_EXPORTER_PATH (or ~/.copilot/logs/otel-signals.jsonl).
-Includes rotated/compressed siblings (*.gz) by default; use --current-only to skip them.
+Includes rotated/compressed siblings (*.gz) automatically.
 """
 
 import argparse
@@ -209,20 +211,27 @@ def main():
                    help="chart style: spark = one row per session (default), grid = 2-D plot")
     p.add_argument("--session", metavar="SESSION_ID",
                    help="filter to one session (prefix match)")
+    p.add_argument("--current-session", action="store_true",
+                   help="filter to the active Copilot session (reads COPILOT_AGENT_SESSION_ID)")
+    p.add_argument("--last", type=int, default=None, metavar="N",
+                   help="restrict to the N most recent sessions by first activity")
     p.add_argument("--width",  type=int, default=60,  help="spark width / grid width in chars (default: 60)")
     p.add_argument("--height", type=int, default=20,  help="grid height in rows (default: 20, grid only)")
     p.add_argument("--warn",   type=float, default=70.0, metavar="PCT",
                    help="warning threshold %% (default: 70)")
     p.add_argument("--no-color", action="store_true", help="disable ANSI colours")
-    p.add_argument("--current-only", action="store_true",
-                   help="read only the active log; skip rotated/compressed siblings")
     args = p.parse_args()
 
+    if sum([bool(args.session), args.current_session, args.last is not None]) > 1:
+        sys.exit("--session, --current-session, and --last are mutually exclusive")
+
     cmd = [sys.executable, analyze, args.path, "--report", "turns", "--json"]
-    if args.session:
+    if args.current_session:
+        cmd.append("--current-session")
+    elif args.last is not None:
+        cmd += ["--last", str(args.last)]
+    elif args.session:
         cmd += ["--session", args.session]
-    if args.current_only:
-        cmd.append("--current-only")
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)

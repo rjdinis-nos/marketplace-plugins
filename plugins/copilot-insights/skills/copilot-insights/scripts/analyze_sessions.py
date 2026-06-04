@@ -11,6 +11,8 @@ Usage:
   python3 analyze_sessions.py --by model
   python3 analyze_sessions.py --by all
   python3 analyze_sessions.py --session fe612bf2     # filter to one session (prefix ok)
+  python3 analyze_sessions.py --current-session      # filter to the active copilot session
+  python3 analyze_sessions.py --last 3               # restrict to the 3 most recent sessions
   python3 analyze_sessions.py --turn 1               # filter to specific turn number (growth/json only)
   python3 analyze_sessions.py --warn 60              # warn at 60% fill instead of 70%
   python3 analyze_sessions.py --top 5                # show top 5 groups
@@ -18,7 +20,7 @@ Usage:
   python3 analyze_sessions.py --json
 
 Reads $COPILOT_OTEL_FILE_EXPORTER_PATH (or ~/.copilot/logs/otel-signals.jsonl).
-Includes rotated/compressed siblings (*.gz) by default; use --current-only to skip them.
+Includes rotated/compressed siblings (*.gz) automatically.
 """
 
 import argparse
@@ -72,15 +74,26 @@ def _open_text(path):
     return open(path, "r", encoding="utf-8", errors="ignore")
 
 
-def resolve_paths(path, include_rotated):
+def resolve_paths(path):
     paths = [path] if os.path.exists(path) else []
-    if include_rotated:
-        seen = set(paths)
-        for sib in glob.glob(glob.escape(path) + "*"):
-            if sib not in seen and os.path.isfile(sib):
-                paths.append(sib)
-                seen.add(sib)
+    seen = set(paths)
+    for sib in glob.glob(glob.escape(path) + "*"):
+        if sib not in seen and os.path.isfile(sib):
+            paths.append(sib)
+            seen.add(sib)
     return paths
+
+
+def _find_last_n_session_ids(paths, n, since=None, until=None):
+    """Return a frozenset of the n most recent session IDs by first-turn timestamp."""
+    turns = parse_turns(paths, since=since, until=until)
+    session_first = {
+        sid: turn_list[0]["ts"]
+        for sid, turn_list in turns.items()
+        if turn_list and turn_list[0].get("ts") is not None
+    }
+    sorted_sids = sorted(session_first, key=lambda s: session_first[s])
+    return frozenset(sorted_sids[-n:])
 
 
 # ── data model ────────────────────────────────────────────────────────────────
@@ -195,7 +208,7 @@ class GrowthAgg:
 
 # ── growth parsing ────────────────────────────────────────────────────────────
 
-def parse_turns(paths, since=None, until=None, session_filter=None):
+def parse_turns(paths, since=None, until=None, session_filter=None, session_ids=None):
     """Return {session_id: [turn_dict sorted by start_ns]} from all chat spans."""
 
     def in_window(ts_secs):
@@ -227,6 +240,8 @@ def parse_turns(paths, since=None, until=None, session_filter=None):
                 attrs = doc.get("attributes", {})
                 session = attrs.get("gen_ai.conversation.id", "unknown")
                 if session_filter and not session.startswith(session_filter):
+                    continue
+                if session_ids is not None and session not in session_ids:
                     continue
 
                 model = attrs.get("gen_ai.response.model") or attrs.get("gen_ai.request.model", "?")
@@ -594,7 +609,7 @@ class ToolAgg:
 
 # ── tool latency parsing ──────────────────────────────────────────────────────
 
-def parse_tools(paths, since=None, until=None, session_filter=None):
+def parse_tools(paths, since=None, until=None, session_filter=None, session_ids=None):
     """Return {tool_name: ToolAgg} from execute_tool spans."""
 
     def in_window(ts_secs):
@@ -627,10 +642,11 @@ def parse_tools(paths, since=None, until=None, session_filter=None):
                     continue
 
                 attrs = doc.get("attributes", {})
-                if session_filter:
-                    sess = attrs.get("gen_ai.conversation.id", "")
-                    if not sess.startswith(session_filter):
-                        continue
+                sess = attrs.get("gen_ai.conversation.id", "")
+                if session_filter and not sess.startswith(session_filter):
+                    continue
+                if session_ids is not None and sess not in session_ids:
+                    continue
 
                 tool_name = attrs.get("gen_ai.tool.name", name[len("execute_tool "):])
                 mcp_hash = attrs.get("github.copilot.tool.parameters.mcp_server_name_hash")
@@ -702,7 +718,7 @@ def fmt_tools_json(tools):
 
 
 
-def analyze_context(paths, group_by, since=None, until=None, session_filter=None):
+def analyze_context(paths, group_by, since=None, until=None, session_filter=None, session_ids=None):
     groups = collections.defaultdict(ContextAgg)
 
     def in_window(ts_secs):
@@ -733,6 +749,8 @@ def analyze_context(paths, group_by, since=None, until=None, session_filter=None
                 attrs = doc.get("attributes", {})
                 session = attrs.get("gen_ai.conversation.id", "unknown")
                 if session_filter and not session.startswith(session_filter):
+                    continue
+                if session_ids is not None and session not in session_ids:
                     continue
 
                 model = attrs.get("gen_ai.response.model") or attrs.get("gen_ai.request.model", "unknown")
@@ -954,6 +972,10 @@ def main():
                    help="grouping dimension (default: session)")
     p.add_argument("--session", metavar="SESSION_ID",
                    help="filter to a single session (prefix match, e.g. fe612bf2)")
+    p.add_argument("--current-session", action="store_true",
+                   help="filter to the active Copilot session (reads COPILOT_AGENT_SESSION_ID)")
+    p.add_argument("--last", type=int, default=None, metavar="N",
+                   help="restrict to the N most recent sessions by first activity")
     p.add_argument("--turn", type=int, metavar="N",
                    help="filter by_turn array to specific turn number (--report growth --json only)")
     p.add_argument("--warn", type=float, default=70.0, metavar="PCT",
@@ -963,11 +985,22 @@ def main():
     p.add_argument("--since", metavar="YYYY-MM-DD", help="only include data on/after this UTC date")
     p.add_argument("--until", metavar="YYYY-MM-DD", help="only include data on/before this UTC date")
     p.add_argument("--json", action="store_true", help="emit JSON instead of a table")
-    p.add_argument("--current-only", action="store_true",
-                   help="read only the active log; skip rotated/compressed siblings")
     args = p.parse_args()
 
-    paths = resolve_paths(args.path, include_rotated=not args.current_only)
+    # Validate mutually exclusive session selectors
+    if sum([bool(args.session), args.current_session, args.last is not None]) > 1:
+        sys.exit("--session, --current-session, and --last are mutually exclusive")
+
+    if args.current_session:
+        env_sid = os.environ.get("COPILOT_AGENT_SESSION_ID")
+        if not env_sid:
+            sys.exit(
+                "--current-session requires COPILOT_AGENT_SESSION_ID to be set.\n"
+                "This is set automatically when running inside a copilot session."
+            )
+        args.session = env_sid
+
+    paths = resolve_paths(args.path)
     if not paths:
         sys.exit(
             f"OTel file not found: {args.path}\n"
@@ -976,11 +1009,16 @@ def main():
             "then start a new copilot session and retry."
         )
 
+    # Resolve --last N into an explicit set of session IDs
+    session_ids = None
+    if args.last is not None:
+        session_ids = _find_last_n_session_ids(paths, args.last, since=args.since, until=args.until)
+
     warn_threshold = args.warn / 100.0
 
     if args.report == "compactions":
         turns_by_session = parse_turns(paths, since=args.since, until=args.until,
-                                       session_filter=args.session)
+                                       session_filter=args.session, session_ids=session_ids)
         compactions = detect_compactions(turns_by_session)
         if args.json:
             print(json.dumps(fmt_compactions_json(compactions), indent=2))
@@ -991,7 +1029,7 @@ def main():
 
     if args.report == "turns":
         turns_by_session = parse_turns(paths, since=args.since, until=args.until,
-                                       session_filter=args.session)
+                                       session_filter=args.session, session_ids=session_ids)
         if not turns_by_session:
             print("No per-turn data found in the log.")
             sys.exit(0)
@@ -1004,7 +1042,7 @@ def main():
 
     if args.report == "growth":
         turns_by_session = parse_turns(paths, since=args.since, until=args.until,
-                                       session_filter=args.session)
+                                       session_filter=args.session, session_ids=session_ids)
         if not turns_by_session:
             print("No context growth data found in the log.")
             sys.exit(0)
@@ -1018,7 +1056,7 @@ def main():
 
     if args.report == "tools":
         tools = parse_tools(paths, since=args.since, until=args.until,
-                            session_filter=args.session)
+                            session_filter=args.session, session_ids=session_ids)
         if not tools:
             print("No tool execution data found in the log.")
             sys.exit(0)
@@ -1030,7 +1068,7 @@ def main():
         return
 
     groups = analyze_context(paths, args.by, since=args.since, until=args.until,
-                             session_filter=args.session)
+                             session_filter=args.session, session_ids=session_ids)
 
     if not groups:
         print("No context window data found in the log.")

@@ -339,21 +339,65 @@ def _open_text(path):
     return open(path, "r", encoding="utf-8", errors="ignore")
 
 
-def resolve_paths(path, include_rotated):
-    """Return the list of files to read. With include_rotated, also pick up
-    rotated/compressed siblings produced by the rotator (e.g. otel-signals.jsonl.1,
+def resolve_paths(path):
+    """Return the list of files to read: the active log plus any rotated/compressed
+    siblings produced by the rotator (e.g. otel-signals.jsonl.1,
     otel-signals.jsonl-20260529.gz)."""
     paths = [path] if os.path.exists(path) else []
-    if include_rotated:
-        seen = set(paths)
-        for sib in glob.glob(glob.escape(path) + "*"):
-            if sib not in seen and os.path.isfile(sib):
-                paths.append(sib)
-                seen.add(sib)
+    seen = set(paths)
+    for sib in glob.glob(glob.escape(path) + "*"):
+        if sib not in seen and os.path.isfile(sib):
+            paths.append(sib)
+            seen.add(sib)
     return paths
 
 
-def analyze(paths, group_by, since=None, until=None, pricing=None):
+def collect_session_times(paths, since=None, until=None):
+    """Return {session_id: first_ts_secs} for all sessions that have span usage data."""
+    sessions = {}
+
+    def in_window(node):
+        if since is None and until is None:
+            return True
+        d = day_of(node)
+        if d == "unknown":
+            return False
+        if since and d < since:
+            return False
+        if until and d > until:
+            return False
+        return True
+
+    def on_span(node):
+        amap = attrs_to_map(node.get("attributes"))
+        if not any(k in amap for k in USAGE_KEYS):
+            return
+        if not in_window(node):
+            return
+        sid = session_of(amap)
+        ts = node_secs(node)
+        if ts is not None and (sid not in sessions or ts < sessions[sid]):
+            sessions[sid] = ts
+
+    def on_metric(_node):
+        pass
+
+    for path in paths:
+        with _open_text(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    doc = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                walk(doc, on_span, on_metric)
+
+    return sessions
+
+
+def analyze(paths, group_by, since=None, until=None, pricing=None, session_filter=None, session_ids=None):
     groups = defaultdict(Agg)
     span_usage_found = False
     metric_input = 0
@@ -378,10 +422,15 @@ def analyze(paths, group_by, since=None, until=None, pricing=None):
             return
         if not in_window(node):
             return
+        sid = session_of(amap)
+        if session_filter and not sid.startswith(session_filter):
+            return
+        if session_ids is not None and sid not in session_ids:
+            return
         if group_by == "model":
             key = model_of(amap)
         elif group_by == "session":
-            key = session_of(amap)
+            key = sid
         elif group_by == "day":
             key = day_of(node)
         else:
@@ -585,19 +634,24 @@ def main():
     p.add_argument("--rate-cache-read", type=float, default=None, help="$/Mtok for cache-read input tokens (default/fallback rate)")
     p.add_argument("--rate-cache-write", type=float, default=None, help="$/Mtok for cache-creation input tokens (default/fallback rate)")
     p.add_argument("--currency", default=None, help="currency symbol for cost output (default: $)")
-    p.add_argument(
-        "--current-only",
-        action="store_true",
-        help="read only the active log; by default rotated/compressed siblings (PATH*, .gz) are included",
-    )
+    p.add_argument("--session", metavar="SESSION_ID",
+                   help="filter to a single session (prefix match, e.g. fe612bf2)")
+    p.add_argument("--current-session", action="store_true",
+                   help="filter to the active Copilot session (reads COPILOT_AGENT_SESSION_ID)")
+    p.add_argument("--last", type=int, default=None, metavar="N",
+                   help="restrict to the N most recent sessions by first activity")
     args = p.parse_args()
+
+    # Validate mutually exclusive session selectors
+    if sum([bool(args.session), args.current_session, args.last is not None]) > 1:
+        sys.exit("--session, --current-session, and --last are mutually exclusive")
 
     try:
         pricing = Pricing.from_args(args)
     except (OSError, json.JSONDecodeError) as e:
         sys.exit(f"Could not read rates: {e}")
 
-    paths = resolve_paths(args.path, include_rotated=not args.current_only)
+    paths = resolve_paths(args.path)
     if not paths:
         sys.exit(
             f"OTel file not found: {args.path}\n"
@@ -606,7 +660,27 @@ def main():
             "then run copilot and retry."
         )
 
-    groups, span_found, m_in, m_out = analyze(paths, args.by, since=args.since, until=args.until, pricing=pricing)
+    session_filter = args.session
+    session_ids = None
+
+    if args.current_session:
+        env_sid = os.environ.get("COPILOT_AGENT_SESSION_ID")
+        if not env_sid:
+            sys.exit(
+                "--current-session requires COPILOT_AGENT_SESSION_ID to be set.\n"
+                "This is set automatically when running inside a copilot session."
+            )
+        session_filter = env_sid
+
+    if args.last is not None:
+        all_sessions = collect_session_times(paths, since=args.since, until=args.until)
+        sorted_sids = sorted(all_sessions, key=lambda s: all_sessions[s])
+        session_ids = frozenset(sorted_sids[-args.last:])
+
+    groups, span_found, m_in, m_out = analyze(
+        paths, args.by, since=args.since, until=args.until, pricing=pricing,
+        session_filter=session_filter, session_ids=session_ids,
+    )
 
     if args.json:
         result = to_json_result(groups, span_found, pricing, args.show_time, m_in, m_out)
